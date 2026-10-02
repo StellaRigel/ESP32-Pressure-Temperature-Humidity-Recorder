@@ -4354,16 +4354,22 @@ void setup() {
 
   Wire.begin(47, 48);           // v2.2：I2C -> SDA=IO47 SCL=IO48
 
-  // ---- INA226 电池监测初始化（V2.1，唯一电池电压来源）----
+  // ---- 电池监测（INA226 / INA230）初始化 —— v2.2 唯一电池电压来源 ----
+  //   ⚠️ 2026-10-02：把 FEh/FFh 的读取与打印**提到 begin() 之前**。
+  //      原实现把打印放在 `if (begin(...))` 成功分支里，而 begin() 内含身份校验 →
+  //      一旦校验不过（换 INA230）就只打一句"未就绪"，**看不到真实 ID**，无法据此修正校验。
+  //      现在无论成败都先打印真实 manu/die（见 硬件核对清单 第七节 清单 1）。
   {
     uint16_t manu = 0, die = 0;
+    bool idOk = ina226.checkIdentity(&manu, &die);
+    webLog("🔎 INA2xx 身份: MANU=0x%04X DIE=0x%04X (%s)\n",
+           manu, die, idOk ? "在位" : "无应答");
     if (ina226.begin(&Wire, INA226_ADDR, INA226_R_SHUNT, INA226_MAX_A)) {
-      ina226.checkIdentity(&manu, &die);
-      webLog("✅ INA226 @0x%02X (MANU=0x%04X DIE=0x%04X) CAL=%u %.3fmA/bit 有效分辨率%.3fmA 量程±%.2fA\n",
+      webLog("✅ INA2xx @0x%02X (MANU=0x%04X DIE=0x%04X) CAL=%u %.3fmA/bit 有效分辨率%.3fmA 量程±%.2fA\n",
              INA226_ADDR, manu, die, ina226.calibration(),
              ina226.currentLsb() * 1000.0f, ina226.currentResolution_mA(), ina226.currentMax_A());
     } else {
-      webLog("⚠️ INA226 @0x%02X 未就绪：电池电压/电量不可用，低电保护暂失效（屏幕与网页将告警）\n", INA226_ADDR);
+      webLog("⚠️ INA2xx @0x%02X 未就绪：电池电压/电量不可用，低电保护暂失效（屏幕与网页将告警）\n", INA226_ADDR);
     }
   }
 

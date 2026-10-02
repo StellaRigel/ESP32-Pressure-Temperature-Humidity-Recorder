@@ -147,13 +147,21 @@ public:
   bool getInvert() const { return _invert; }
 
   // ---- 身份/诊断 ----
+  //   ⚠️ 2026-10-02（v2.2）：**放宽身份校验以兼容 INA230**。
+  //      INA230 与 INA226 的引脚/地址/寄存器位域/AVG/转换时间逐项一致，仅 FFh 器件 ID 不同
+  //      （INA230 手册未给该值）。原实现硬校验 `manu==0x5449 && die==0x2260` →
+  //      换 INA230 后 `begin()` 直接失败 → 器件被判"离线" → **低电保护与电量显示整体失效**。
+  //      现改为：**能读回 FEh/FFh 即认为在位**；真实 ID 由调用方打印（首板核对）。
+  //      若日后需要收紧，按首板实测的 ID 加白名单（见 硬件核对清单 第七节 清单 1）。
   bool checkIdentity(uint16_t* manuOut = nullptr, uint16_t* dieOut = nullptr) {
     uint16_t manu = 0, die = 0;
     if (!readReg(INA226_REG_MANU_ID, manu)) return false;
     if (!readReg(INA226_REG_DIE_ID,  die))  return false;
     if (manuOut) *manuOut = manu;
     if (dieOut)  *dieOut  = die;
-    return (manu == INA226_MANU_ID_TI && die == INA226_DIE_ID_226);
+    if (manu == 0xFFFF && die == 0xFFFF) return false;   // 全 1 = 总线无应答
+    if (manu == 0x0000 && die == 0x0000) return false;   // 全 0 = 读到空
+    return true;                                          // INA226 / INA230 都放行
   }
 
   // ---- 原始寄存器读写（排障用）----
