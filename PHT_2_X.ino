@@ -519,13 +519,17 @@ bool bleStopping = false;       // 正在主动关闭蓝牙：期间 onDisconnec
 // ===== 「连网会话」：配网/按钮触发的临时 WiFi（设计文档 · 无线切换与配网流程）=====
 //   移动+电池平时走蓝牙（省电）；用户配网保存 / 点已保存网络 / 长按按钮 → 临时切 WiFi 用网页。
 //   会话期间只要有网页请求就续期（网页每 3 秒轮询 /status）；断流 WIFI_SESSION_MS 自动回蓝牙。
-//   防误触三保险：① 按钮必须长按 ≥1.5s ② 插电/固定时按钮完全无效（那时本来就该 WiFi/AP）
-//                ③ 会话到期自动回蓝牙 —— 丢包里蹭到也不会傻等把电耗光
+//   防误触：① 插电/固定时按钮完全无效（那时本来就该 WiFi/AP）
+//          ② 会话到期自动回蓝牙 —— 丢包里蹭到也不会傻等把电耗光
+//   ⚠️ v2.2（2026-10-02）：交互由**长按改短按**（依据 设计文档 V2.2 · 软件 · 交互和可视化 1）。
+//      短按上限设 1200ms：既覆盖正常点按，又把 1.2~5s 的"犹豫按压"排除在外，
+//      避免"想长按结果按了一半就松手"被误判成常规动作。
 const unsigned long WIFI_SESSION_MS   = 60000;
-const unsigned long WIFI_BTN_HOLD_MS  = 1500;
+const unsigned long WIFI_BTN_SHORT_MS = 1200;    // ≤ 此值 = 短按（下限见 WIFI_BTN_DEBOUNCE_MS）
+const unsigned long WIFI_BTN_DEBOUNCE_MS = 30;   // < 此值视为抖动，忽略
 // 【兜底】长按到这个时长（松手才触发）→ 强制开热点 + 断开 WiFi，用于设备失联时救援
 //   失控场景：设备连上了某个网、却因「静态 IP/网关学错网段」而彻底够不着（实测踩到，见 开发日志 §十二）
-const unsigned long WIFI_BTN_RECOVER_MS = 5000;
+const unsigned long WIFI_BTN_RECOVER_MS = 5000;   // 长按（松手触发）= 救援模式，**保持长按以防误触**
 const unsigned long AP_SESSION_MS     = 600000;  // AP 配网热点：无人访问满 10 分钟自动关（省电，移动+电池尤其重要）
 unsigned long wifiSessionUntil = 0;    // 会话到期时刻（0 = 无会话）
 unsigned long apSessionUntil   = 0;    // AP 配网热点到期时刻（0 = 无超时/未启用；仅按需开启的 AP 用）
@@ -1099,7 +1103,7 @@ void updateWireless() {
 //   移动 + 电池：长按 ≥1.5s 才生效 → 先选「已保存且扫到的最强」连；连不上/无组 → 开 AP 配网
 //     热点带超时（AP_SESSION_MS），到期或配网成功自动关，避免把电耗光
 //   V2.1.1-a 新增：移动 + 插电 → 长按切「快充 / 慢充」（临时，仅本次充电有效，拔插即回快充）
-//   【兜底】再新增：**长按 ≥5s 松手 → 强制开热点 + 断开 WiFi**（任何模式、任何供电都生效）
+//   【兜底】**长按 ≥5s 松手 → 强制开热点 + 断开 WiFi**（任何模式、任何供电都生效）
 //     用途：设备连上了网但**够不着**（如静态 IP 学错网段）时自救 —— 走 AP 192.168.5.1 重新配网
 //     顺带把该网络学到的「网关/掩码/DNS」清掉，否则重连还会用旧网段（详见下面的 wifiRecover()）
 void wifiRecover(const char* why);          // 前向声明（定义在 startAPWithTimeout 附近）
@@ -1110,7 +1114,7 @@ void checkWifiButton() {
   static bool recoverHinted = false;        // 本次按住是否已提示过「可进救援模式」
   bool now = digitalRead(PIN_WIFI_BTN);
   if (last == HIGH && now == LOW) { downAt = millis(); recoverHinted = false; }
-  // 按住期间：满 WIFI_BTN_RECOVER_MS 就提示一次（让用户知道再按住松手会进救援模式）
+  // 按住期间：满 WIFI_BTN_RECOVER_MS 提示一次（让用户知道松手会进救援模式）—— 救援仍是长按，防误触
   if (now == LOW && !recoverHinted && downAt && (millis() - downAt) >= WIFI_BTN_RECOVER_MS) {
     recoverHinted = true;
     uiDisplay.showToast(UI_TOAST_AP, "HOLD...", "松开 = 进 AP 救援", AP_IP_STR, 4000);
@@ -1120,22 +1124,30 @@ void checkWifiButton() {
   if (last == LOW && now == HIGH) {
     unsigned long held = millis() - downAt;
     if (held >= WIFI_BTN_RECOVER_MS) {
-      // ①【兜底】救援模式：优先级最高，任何模式/供电都生效
+      // ①【兜底】救援模式：优先级最高，任何模式/供电都生效（**保持长按**，防误触）
       wifiRecover("长按按钮");
-    } else if (held >= WIFI_BTN_HOLD_MS) {
+    } else if (held >= WIFI_BTN_DEBOUNCE_MS && held <= WIFI_BTN_SHORT_MS) {
+      // ② 常规动作：**短按**（v2.2 由长按改为短按）
+      const char* how = "短按";
       if (deviceMode == 1 && isExternallyPowered()) {
-        // V2.1.1-a：移动 + 插电 → 切快/慢充（临时、不持久化；拔插即回快充）
+        // 移动 + 插电 → 切快/慢充（临时、不持久化；拔插即回快充）
         chargeForceSlow = !chargeForceSlow;
         applyChargeStrategy(readPowerState());
         uiDisplay.showToast(UI_TOAST_OK, chargeForceSlow ? "SLOW CHG" : "FAST CHG", "", "", 3000);
-        webLogln("🔘 按钮长按 %.1fs：移动+插电 → 临时%s（仅本次充电，拔插回快充）",
-                 held / 1000.0, chargeForceSlow ? "慢充~297mA" : "快充~890mA");
-      } else if (deviceMode == 1) {                 // 移动 + 电池 → 开无线（V2.1 语义）
+        webLogln("🔘 按钮%s %.0fms：移动+插电 → 临时%s（仅本次充电，拔插回快充）",
+                 how, held, chargeForceSlow ? "慢充~297mA" : "快充~890mA");
+      } else if (deviceMode == 1) {                 // 移动 + 电池 → 开无线
         wifiBtnArmed = true;
-        webLogln("🔘 WiFi 按钮长按 %.1fs：扫描并连接已保存的最强网络", held / 1000.0);
+        webLogln("🔘 按钮%s %.0fms：扫描并连接已保存的最强网络", how, held);
       } else {                                      // 固定 → 无效
-        webLogln("🔘 WiFi 按钮长按：固定模式本就是 WiFi/AP → 忽略（移动按 ≥5s 可进 AP 救援模式）");
+        webLogln("🔘 按钮%s：固定模式本就是 WiFi/AP → 忽略（按住 ≥5s 可进 AP 救援模式）", how);
       }
+    } else if (held < WIFI_BTN_DEBOUNCE_MS) {
+      // 抖动，静默忽略
+    } else {
+      // 1.2~5s：犹豫按压，不触发任何动作（避免"长按没按够"被误判）
+      webLogln("🔘 按钮按住 %.1fs：介于短按与救援之间，未触发动作（短按≤%.1fs / 救援≥%.1fs）",
+               held / 1000.0, WIFI_BTN_SHORT_MS / 1000.0, WIFI_BTN_RECOVER_MS / 1000.0);
     }
   }
   last = now;
@@ -4593,7 +4605,7 @@ bool calAbortPressed() {
   static unsigned long downAt = 0;
   bool now = digitalRead(PIN_WIFI_BTN);
   if (last == HIGH && now == LOW) downAt = millis();
-  bool hit = (last == LOW && now == HIGH && (millis() - downAt) >= WIFI_BTN_HOLD_MS);
+  bool hit = (last == LOW && now == HIGH && (millis() - downAt) >= WIFI_BTN_DEBOUNCE_MS && (millis() - downAt) <= WIFI_BTN_SHORT_MS);   // v2.2：短按
   last = now;
   return hit;
 }
