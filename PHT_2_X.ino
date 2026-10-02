@@ -1349,6 +1349,16 @@ void chargeInit() {
   digitalWrite(PIN_CE, LOW);     // CE 低 → 允许充电
   digitalWrite(PIN_ISET, LOW);   // 兜底复写
   digitalWrite(PIN_CE, LOW);
+
+  // ===== TPS2117 PR1 上电安全默认（v2.2 新增）=====
+  //   ⛔ **必须最先拉低**：PR1 低 → 选 VIN2(LDO 3.3V)；PR1 高 → 选 VIN1(电池直供)。
+  //      模组 VDD33 绝对最大 3.6 V，而电池满电 4.2 V → 若上电瞬间选中 VIN1，
+  //      **超出绝对最大值，永久损坏芯片**（依据：硬件核对清单 第三节 ②）。
+  //   ⚠️ 同样遵守"先 pinMode 再 digitalWrite"的顺序（见上面软复位实测教训）。
+  //   板上已有下拉给出安全默认，这里再显式拉低一次做双保险。
+  pinMode(PIN_PR1, OUTPUT);
+  digitalWrite(PIN_PR1, LOW);
+  digitalWrite(PIN_PR1, LOW);    // 兜底复写
 }
 
 // 电流档：fast=true → 快充(~890mA)；false → 慢充(~297mA)
@@ -1375,6 +1385,77 @@ bool fixChargeBlocked = false;      // true = 固定已停充（CE 高）
 // --- V2.1.1-a：移动模式下的「临时慢充」（IO9 在【移动 + 插电】时切换）---
 //   不持久化（RAM 标志，不写 NVS）；一断电即复位（拔插回来 = 默认快充），见 serviceChargeTemp()。
 bool chargeForceSlow = false;        // true = 本次充电临时用慢充（~297mA）
+
+// ===== TPS2117 PR1 电池直供互锁（v2.2 新增）=====
+//   目的：电池电压过低时绕过 LDO 让电池直供，把可用下限从 ~3.5V 压到 ~3.0V。
+//
+//   ⛔⛔ **安全红线（违反 = 永久损坏硬件）** ⛔⛔
+//     模组 VDD33 绝对最大 **3.6 V**（S3 手册表 9）；电池满电 **4.2 V**。
+//     PR1 高 = 选 VIN1（电池直供）→ 满电时会把 4.2 V 直接灌进模组 → **烧毁**。
+//     故：**VBAT > 3.6 V 时，任何代码路径都不得把 PR1 拉高。**
+//
+//   阈值与滞回（依据：硬件核对清单 第四节 + 第五节清单 4）：
+//     VBAT < 3.4 V          → 允许 PR1 高（切电池直供）
+//     VBAT ≥ 3.5 V          → 回 PR1 低（回 LDO）
+//     VBAT > 3.6 V          → ⛔ 一律禁止拉高（硬约束，优先于其他一切条件）
+//     INA230 离线/读数无效   → 保持 PR1 低（fail-safe：宁可早关机，也不灌 4.2V 进模组）
+//
+//   ⚠️ 默认态 PR1 低 = LDO 安全；板上另有下拉作硬件默认。
+const float PR1_ON_V      = 3.40f;   // 低于此值才允许切电池直供
+const float PR1_OFF_V     = 3.50f;   // 回到此值以上切回 LDO
+const float PR1_HARD_MAX  = 3.60f;   // ⛔ 超过此值一律禁止拉高（绝对最大 3.6V）
+const float PR1_VALID_MIN = 2.00f;   // 低于此值视为读数无效（未接电池/传感器故障）
+const float PR1_VALID_MAX = 4.50f;   // 高于此值视为读数无效
+
+bool pr1BatteryDirect = false;       // true = 当前选了 VIN1（电池直供）
+
+void pr1SetDirect(bool direct, float vbat) {
+  // ⛔ 最后一道保险：拉高之前再验一次电压。任何情况下都不许在高压时切直供。
+  if (direct && vbat > PR1_HARD_MAX) {
+    webLog("⛔ PR1 拒绝拉高：VBAT=%.3fV > %.2fV（绝对最大 3.6V，拉了会烧模组）\n",
+           vbat, PR1_HARD_MAX);
+    return;                                   // 保持现状（低 = LDO）
+  }
+  digitalWrite(PIN_PR1, direct ? HIGH : LOW);
+  if (direct != pr1BatteryDirect) {
+    pr1BatteryDirect = direct;
+    webLog("🔀 PR1 → %s（VBAT=%.3fV）\n",
+           direct ? "VIN1 电池直供" : "VIN2 LDO", vbat);
+  }
+}
+
+void servicePr1Interlock(const PowerState& p) {
+  // 1) 读数有效性：无效 → 保持/回到 LDO（fail-safe）
+  bool vValid = p.inaOK && p.battVolt > PR1_VALID_MIN && p.battVolt < PR1_VALID_MAX;
+  if (!vValid) {
+    static unsigned long lastWarn = 0;
+    if (pr1BatteryDirect) pr1SetDirect(false, p.battVolt);
+    else digitalWrite(PIN_PR1, LOW);           // 确保低（即使状态变量没变也复写一次）
+    if (millis() - lastWarn > 300000UL) {      // 5 分钟限流，避免刷屏
+      lastWarn = millis();
+      webLogln("🛡️ PR1 保持 LDO：电池电压读数无效（INA 离线或超出 2.0~4.5V）");
+    }
+    return;
+  }
+
+  // 2) 电压过高 → 强制回 LDO（**这条就是防烧板子的关键分支**）
+  if (p.battVolt > PR1_HARD_MAX) {
+    if (pr1BatteryDirect) {
+      pr1SetDirect(false, p.battVolt);
+      webLog("🛡️ PR1 强制回 LDO：VBAT=%.3fV 高于硬上限 %.2fV\n", p.battVolt, PR1_HARD_MAX);
+    } else {
+      digitalWrite(PIN_PR1, LOW);              // 常态：复写低，零风险
+    }
+    return;
+  }
+
+  // 3) 正常滞回区间（此时必然 VBAT ≤ 3.60V，切直供是安全的）
+  if (!pr1BatteryDirect && p.battVolt < PR1_ON_V) {
+    pr1SetDirect(true, p.battVolt);            // 低压 → 切电池直供
+  } else if (pr1BatteryDirect && p.battVolt >= PR1_OFF_V) {
+    pr1SetDirect(false, p.battVolt);           // 电压回升 → 回 LDO
+  }
+}
 
 void applyChargeStrategy(const PowerState& ps) {
   // 1) 电流档位随模式切换（仅在变化时打印，避免日志刷屏）
@@ -5269,6 +5350,7 @@ void loop() {
   // 无线互斥状态机 + 实体 WiFi 按钮（每 2 秒看一次；插拔电源/切模式/按按钮都会触发切换）
   checkWifiButton();                          // 每圈都查（一次 digitalRead，极廉价）：原先 2 秒轮询会漏掉短按
   serviceChargeTemp();                        // V2.1.1-a：断电即复位临时慢充（常态立即返回，零开销）
+  servicePr1Interlock(readPowerState());      // v2.2：TPS2117 PR1 电池直供互锁（低电才切；>3.6V 硬禁）
   serviceBattAnchor();                        // V2.1.1-b：满电锚点（满电保持 5min → 刷新表内 100% 点）
   serviceTopBar();                            // V2.1.1-c：顶栏快通道（拔插/充电/WiFi 变化 → 立刻反映）
   if (nowMs - lastWirelessCheck > 2000) {
