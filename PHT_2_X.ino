@@ -1134,11 +1134,11 @@ void checkWifiButton() {
         chargeForceSlow = !chargeForceSlow;
         applyChargeStrategy(readPowerState());
         uiDisplay.showToast(UI_TOAST_OK, chargeForceSlow ? "SLOW CHG" : "FAST CHG", "", "", 3000);
-        webLogln("🔘 按钮%s %.0fms：移动+插电 → 临时%s（仅本次充电，拔插回快充）",
+        webLogln("🔘 按钮%s %lums：移动+插电 → 临时%s（仅本次充电，拔插回快充）",
                  how, held, chargeForceSlow ? "慢充~297mA" : "快充~890mA");
       } else if (deviceMode == 1) {                 // 移动 + 电池 → 开无线
         wifiBtnArmed = true;
-        webLogln("🔘 按钮%s %.0fms：扫描并连接已保存的最强网络", how, held);
+        webLogln("🔘 按钮%s %lums：扫描并连接已保存的最强网络", how, held);
       } else {                                      // 固定 → 无效
         webLogln("🔘 按钮%s：固定模式本就是 WiFi/AP → 忽略（按住 ≥5s 可进 AP 救援模式）", how);
       }
