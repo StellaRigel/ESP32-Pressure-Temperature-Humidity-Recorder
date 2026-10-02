@@ -69,7 +69,7 @@ typedef struct {
 PowerState g_power = {};
 
 
-SPIClass sdSPI(HSPI);
+SPIClass sdSPI(HSPI);          // v2.2：SD 走 HSPI（IO5/4/6/7 正是 HSPI 的原生引脚）；屏走默认 SPI(FSPI)
 
 // ==================== Web 日志系统 ====================
 #define WEB_LOG_MAX 200
@@ -436,7 +436,7 @@ uint32_t wifiCfgHash() {
 #define WL_WIFI 1
 #define WL_BLE  2
 
-#define PIN_WIFI_BTN  9                        // 实体 WiFi 开关（V2.1 硬件）；未焊按钮时上拉=不触发
+#define PIN_WIFI_BTN  21                       // 实体按钮（v2.2：IO9 -> IO21；交互改短按）
 #define BLE_DEV_NAME  "PHT_2_X"
 // 前向声明：.ino 的自动函数原型在遇到 class 定义后可能失效，本段用到的后置定义全部显式声明
 //   （与文件顶部 “extern uint8_t deviceMode;” 同理）
@@ -1144,15 +1144,15 @@ void checkWifiButton() {
 const int INTERVAL_SEC = 30;
 const int LOG_KEEP_DAYS = 14;      // 未插卡时 /log.csv 的保留天数（兜底裁头，见 trimLogOlderThan）
 const int KEEP_IN_MEMORY = 600;
-const int SD_CS = 6;
+const int SD_CS = 7;          // v2.2：SD CS -> IO7
 
-// ===== 电源/电池检测引脚（第二版 PCB） =====
+// ===== 电源/电池检测引脚（v2.2 板：全部换脚）=====
 // BQ24074 的 PGOOD / CHG 都是【开漏输出、低有效】：
 //   PGOOD: 低 = 有效外部电源已接入；高阻 = 无有效输入
 //   CHG  : 低 = 充电中；高阻 = 充电完成/未接电源
 // 故 ESP32 需用【内部上拉】，读取时为 !digitalRead()
-const int PIN_PGOOD = 2;     // 开漏，低=外部电源正常
-const int PIN_CHG   = 21;    // 开漏，低=充电中
+const int PIN_PGOOD = 10;    // 开漏，低=外部电源正常（v2.2：IO2 -> IO10）
+const int PIN_CHG   = 9;     // 开漏，低=充电中（v2.2：IO21 -> IO9）
 // 注：原 PIN_BAT(IO9) 电池分压 ADC 方案已于 V2.1 删除（板上已无 1M 分压电阻），
 //     电池电压唯一来源为 INA226；IO9 释放，留作实体 WiFi 按钮（见设计文档附录 A）。
 
@@ -1161,11 +1161,19 @@ const int PIN_CHG   = 21;    // 开漏，低=充电中
 //   PIN_ISET → ISET 切换 MOS(AO3400A)栅极：高=快充(短路R7，等效 1k → ≈890mA)
 //                                         低=慢充(1k+2k 串联 3k → ≈297mA)
 // 注：BQ24074 EN1/EN2 由板上 3P 排针硬件跳线配置（外部电源/USB500/USB100），软件不介入。
-const int PIN_CE   = 17;
-const int PIN_ISET = 18;
+const int PIN_CE   = 13;      // v2.2：IO17 -> IO13（BQ24074 CE#，低=允许充电）
+const int PIN_ISET = 17;      // v2.2：IO18 -> IO17（IO18 让给 TPS2117 PR1）
+// ===== TPS2117 电源多路复用 PR1（v2.2 新增）=====
+//   PR1 ≥ VREF(≈1 V) → 选 VIN1（电池直供）；PR1 低 → 选 VIN2（LDO 输出）
+//   板上已加下拉 → 上电默认低 = LDO 供电（安全默认）；固件只在低压时"单向收紧"抬为高
+const int PIN_PR1  = 18;      // v2.2：TPS2117 PR1（切换 LDO ⇄ 电池直供）
+// ⚠️ BQ24074 的 EN1/EN2 在 v2.2 板接到 IO11/IO12（v2.1 是硬件跳线），本版固件暂不驱动，
+//    保持板上默认 (0,0) = USB100 最保守档；待 USB 枚举检测实装后再接管（见硬件核对清单 7.1 清单 3）
+const int PIN_EN1  = 11;
+const int PIN_EN2  = 12;
 
 // ===== 电池监测 INA226（V2.1 新增，替代 IO9 分压方案）=====
-//   I2C 与传感器共用总线（IO4=SDA / IO5=SCL），地址 0x40（A0=A1=GND）
+//   I2C 与传感器共用总线（IO47=SDA / IO48=SCL），地址 0x40（A0=A1=GND）
 //   高边 10mΩ 采样电阻跨在 BQ24074@BAT 与电池正极之间，VIN+ 靠 BQ 侧
 //     → 充电时电流为正、放电为负；VBUS 接 VIN-（电池侧）→ 读电池真实电压
 //   驱动实现见同目录 ina226.h（放头文件可绕开 .ino 原型注入的自定义类型问题）
@@ -1653,7 +1661,7 @@ bool writeLineToSDByDate(const String& line, const String& header,
 //   ② /sdlist（网页列 SD 目录）  ③ SD 文件下载
 //   插卡后第一次用到就自动认出来，不必重启。
 // ⚠️ 只在 !sdOK 时探测；已就绪直接返回，不重复挂载。
-// ⚠️ 总线是分开的：SD 走 sdSPI(HSPI)=SPI3（引脚 15/16/7/6），屏走默认 SPI(FSPI)=SPI2 →
+// ⚠️ 总线是分开的：SD 走 sdSPI(HSPI)（引脚 5/4/6/7 = HSPI 原生），屏走默认 SPI(FSPI)（引脚 1/2 经 GPIO 矩阵）→
 //   运行中重新挂载 SD 不会打扰屏幕。
 // ⚠️ SD.begin() 是**阻塞**的（正常约 100~300ms，坏卡可能到秒级）→ 绝不能放进 30s 采样路径，
 //   只放在上面那三个低频/人工入口。
@@ -2229,7 +2237,7 @@ int backfillTodayFromLog() {
 }
 
 void initSD() {
-  sdSPI.begin(15, 16, 7, 6);
+  sdSPI.begin(5, 4, 6, 7);      // v2.2：SCK=IO5 MISO=IO4 MOSI=IO6 CS=IO7
   if (!SD.begin(SD_CS, sdSPI)) {
     webLogln("⚠️ SD卡初始化失败");
     sdOK = false;
@@ -4344,7 +4352,7 @@ void setup() {
   setenv("TZ", "CST-8", 1);
   tzset();
 
-  Wire.begin(4, 5);
+  Wire.begin(47, 48);           // v2.2：I2C -> SDA=IO47 SCL=IO48
 
   // ---- INA226 电池监测初始化（V2.1，唯一电池电压来源）----
   {

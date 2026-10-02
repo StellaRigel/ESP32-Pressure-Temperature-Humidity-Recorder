@@ -23,12 +23,12 @@
 #include <stdint.h>
 #include <string.h>
 
-// ---- 引脚定义（按用户要求修改，非官方示例的 GPIO9~14）----
-#define LCD_RST_PIN  12   // RES  -> IO12
-#define LCD_SCK_PIN  14   // SCK  -> IO14
-#define LCD_MOSI_PIN 13   // SDI  -> IO13
-#define LCD_DC_PIN   11   // DC   -> IO11
-#define LCD_CS_PIN   10   // CS   -> IO10
+// ---- 引脚定义（v2.2 板：LCD 整体迁移到 IO40/41/42/1/2）----
+#define LCD_RST_PIN  42   // RES  -> IO42
+#define LCD_SCK_PIN  1    // SCK  -> IO1
+#define LCD_MOSI_PIN 2    // SDI  -> IO2
+#define LCD_DC_PIN   41   // DC   -> IO41
+#define LCD_CS_PIN   40   // CS   -> IO40
 
 #define LCD_SPI_FREQ 40000000UL   // 40 MHz
 
