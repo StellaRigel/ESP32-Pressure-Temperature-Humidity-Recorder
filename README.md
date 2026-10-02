@@ -99,7 +99,6 @@ ui_font_oldsans.h    备用字体
 web_icon.h           网页 favicon / 主屏图标（PNG，存 flash 由路由直发）
 ina226.h             INA226/INA230 电流电压监测驱动
 tools/               开发与自检脚本（node）
-Schematic/           原理图导出图
 设计文档.md           规格与各版本规划（**看"是什么"**）
 实现细节.md           实现手法、实测数据、踩坑台账（**看"怎么做"**）
 硬件核对清单.md        引脚/电气核对结论（**看"硬件事实"**）
