@@ -42,8 +42,8 @@
 #define UI_TOAST_FAIL  1   // ×
 #define UI_TOAST_AP    2   // 广播图标（圆点 + 三弧）
 
-// ---- 充电阶段(CC/CV) 与电量：全部由主逻辑用 INA226 判定后传入 ----
-//      屏幕不再自行用电压近似（见 setPower()）。INA226 离线时电量区改显告警。
+// ---- 充电阶段(CC/CV) 与电量：全部由主逻辑用 INA230 判定后传入 ----
+//      屏幕不再自行用电压近似（见 setPower()）。INA230 离线时电量区改显告警。
 
 // ---- 24h 变率右对齐基准（逻辑 x，屏幕逻辑宽 250）----
 #define UI_TREND_RIGHT  247
@@ -138,7 +138,7 @@ public:
     // ---- 状态：主逻辑直接写，或用下面的 setter ----
     bool    charging = false;          // 充电中
     bool    cvPhase  = false;          // 充电相位: false=CC(恒流) true=CV(恒压)
-    bool    inaValid = true;           // INA226 是否在线（false → 电量/电池区改显告警）
+    bool    inaValid = true;           // INA230 是否在线（false → 电量/电池区改显告警）
     uint8_t battPct  = 0;              // 电量 0..100（仅 inaValid 时有效）
     uint8_t wifiStat = UI_WIFI_OFF;    // UI_WIFI_OFF / STA / AP
     bool    onSite   = true;           // true=固定(FIX) false=移动(MOV)
@@ -153,10 +153,10 @@ public:
         redrawAll(time(nullptr));     // 底图已删 → 开机即全量动态重绘（白底 + 标签 + 顶栏）
     }
 
-    // 全部由主逻辑（INA226）判定后传入；屏幕不再自行近似
+    // 全部由主逻辑（INA230）判定后传入；屏幕不再自行近似
     void setPower(bool chg, bool cv, bool inaOK, uint8_t pct) {
         charging = chg;
-        cvPhase  = cv;                            // 来自 INA226 cvZone
+        cvPhase  = cv;                            // 来自 INA230 cvZone
         inaValid = inaOK;                         // false → 电量/电池区改为告警
         battPct  = pct;
     }
@@ -428,7 +428,7 @@ private:
                 for (int y = 2; y <= 8; y++) px(lx + bars[i] + dx, ly + y, true);
     }
 
-    // ---- 告警叹号 (2x11)：INA226 离线时占电池图标位 ----
+    // ---- 告警叹号 (2x11)：INA230 离线时占电池图标位 ----
     void drawBang(int lx, int ly) {
         for (int y = 0; y < 8; y++) { px(lx, ly + y, true); px(lx + 1, ly + y, true); }
         px(lx, ly + 10, true); px(lx + 1, ly + 10, true);
@@ -470,7 +470,7 @@ private:
 
         // 充电中 -> ⚡ + CC/CV ；未充电 -> 电量百分比（统一右对齐到 x=198）
         if (!inaValid) {
-            // INA226 离线：电量未知 → 整块改告警（充电中仍显示 ⚡）
+            // INA230 离线：电量未知 → 整块改告警（充电中仍显示 ⚡）
             // 避让："INA!" 右对齐到 x=198、宽 36 → 墨迹约 163..195（'I' 从 163 起）。
             //      故告警态 ⚡ 左移到 152（占 152..159，留 4px 间隙）；
             //      正常充电态仍为 166（与 CC/CV 的 176 对齐）。

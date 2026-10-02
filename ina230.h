@@ -1,8 +1,8 @@
 /**
- * ina226.h —— INA226 高边电压/电流监测驱动（PHT_2_X 电池监测）
+ * ina230.h —— INA230 高边电压/电流监测驱动（PHT_2_X 电池监测）
  * ================================================================
  * 硬件（见 设计文档.md · V2.1 · 电池监测）：
- *   · INA226 挂 I2C 总线，地址 0x40（A0=A1=GND）
+ *   · INA230 挂 I2C 总线，地址 0x40（A0=A1=GND）
  *   · 高边 10mΩ 采样电阻跨接在 BQ24074@BAT 与电池正极之间
  *       VIN+ 靠 BQ 侧  /  VIN- 靠电池侧   → 充电时电流为正
  *   · VBUS 引脚接到 VIN-（电池侧）→ 电压通道读【电池真实对地电压】
@@ -13,46 +13,46 @@
  *   放进 .h 后不参与原型注入，可以放心用 struct / class。
  * ================================================================
  */
-#ifndef PHT_INA226_H
-#define PHT_INA226_H
+#ifndef PHT_INA230_H
+#define PHT_INA230_H
 
 #include <Arduino.h>
 #include <Wire.h>
 
 // ---------------- 寄存器地址 ----------------
-#define INA226_REG_CONFIG   0x00
-#define INA226_REG_SHUNT_V  0x01
-#define INA226_REG_BUS_V    0x02
-#define INA226_REG_POWER    0x03
-#define INA226_REG_CURRENT  0x04
-#define INA226_REG_CAL      0x05
-#define INA226_REG_MASK     0x06
-#define INA226_REG_ALERT    0x07
-#define INA226_REG_MANU_ID  0xFE   // 厂商 ID，TI = 0x5449 ("TI")
-#define INA226_REG_DIE_ID   0xFF   // 器件 ID，INA226 = 0x2260
+#define INA230_REG_CONFIG   0x00
+#define INA230_REG_SHUNT_V  0x01
+#define INA230_REG_BUS_V    0x02
+#define INA230_REG_POWER    0x03
+#define INA230_REG_CURRENT  0x04
+#define INA230_REG_CAL      0x05
+#define INA230_REG_MASK     0x06
+#define INA230_REG_ALERT    0x07
+#define INA230_REG_MANU_ID  0xFE   // 厂商 ID（⚠️ INA230 手册无此项；实测读 0x0000）
+#define INA230_REG_DIE_ID   0xFF   // 器件 ID（INA230 手册仅称"ASCII 唯一标识"；实测 0x0000）
 
-#define INA226_MANU_ID_TI   0x5449
-#define INA226_DIE_ID_226   0x2260
+// （已删除 INA230 的 ID 常量：本项目只用 INA230）
+
 
 // ---------------- 物理 LSB（满量程固定，与配置无关）----------------
 //   分流电压：±81.92 mV，LSB = 2.5 µV
 //   总线电压：0~40.96 V，LSB = 1.25 mV
-#define INA226_SHUNT_LSB_V  0.0000025f
-#define INA226_BUS_LSB_V    0.0012500f
+#define INA230_SHUNT_LSB_V  0.0000025f
+#define INA230_BUS_LSB_V    0.0012500f
 
 // ---------------- 平均次数 / 转换时间 编码 ----------------
-//   注意：INA226 的编码【不是线性的】，0212 之类是跳档的，别想当然
-enum Ina226Avg {
-  INA226_AVG_1 = 0, INA226_AVG_4 = 1, INA226_AVG_16 = 2, INA226_AVG_64 = 3,
-  INA226_AVG_128 = 4, INA226_AVG_256 = 5, INA226_AVG_512 = 6, INA226_AVG_1024 = 7
+//   注意：INA230 的编码【不是线性的】，0212 之类是跳档的，别想当然
+enum Ina230Avg {
+  INA230_AVG_1 = 0, INA230_AVG_4 = 1, INA230_AVG_16 = 2, INA230_AVG_64 = 3,
+  INA230_AVG_128 = 4, INA230_AVG_256 = 5, INA230_AVG_512 = 6, INA230_AVG_1024 = 7
 };
-enum Ina226ConvTime {
-  INA226_CT_140US = 0, INA226_CT_204US = 1, INA226_CT_332US = 2, INA226_CT_588US = 3,
-  INA226_CT_1100US = 4, INA226_CT_2116US = 5, INA226_CT_4156US = 6, INA226_CT_8244US = 7
+enum Ina230ConvTime {
+  INA230_CT_140US = 0, INA230_CT_204US = 1, INA230_CT_332US = 2, INA230_CT_588US = 3,
+  INA230_CT_1100US = 4, INA230_CT_2116US = 5, INA230_CT_4156US = 6, INA230_CT_8244US = 7
 };
 
 // ---------------- 读数结构 ----------------
-struct Ina226Reading {
+struct Ina230Reading {
   float shuntVolt_mV = 0;   // 分流电压（mV）
   float busVolt_V    = 0;   // 总线/电池电压（V）—— 本电路即电池真实电压
   float current_mA   = 0;   // 电流（mA，充电为正、放电为负）
@@ -62,9 +62,9 @@ struct Ina226Reading {
 };
 
 // ================================================================
-class INA226 {
+class INA230 {
 public:
-  INA226() {}
+  INA230() {}
 
   /**
    * 初始化：探测 → 写 CONFIG/CAL → 回读校验
@@ -78,8 +78,8 @@ public:
    * @return true = 器件在线且配置写入成功
    */
   bool begin(TwoWire* wire, uint8_t addr, float rShunt = 0.010f, float maxCurrent_A = 1.0f,
-             Ina226Avg avg = INA226_AVG_128,
-             Ina226ConvTime busCt = INA226_CT_1100US, Ina226ConvTime shuntCt = INA226_CT_1100US) {
+             Ina230Avg avg = INA230_AVG_128,
+             Ina230ConvTime busCt = INA230_CT_1100US, Ina230ConvTime shuntCt = INA230_CT_1100US) {
     _wire = wire; _addr = addr; _rShunt = rShunt;
     if (!checkIdentity()) { _ok = false; return false; }
 
@@ -88,13 +88,13 @@ public:
     _cal = calcCalibration(_currentLsb, _rShunt);
     _config = buildConfig(avg, busCt, shuntCt, true);
 
-    if (!writeReg(INA226_REG_CONFIG, _config)) { _ok = false; return false; }
-    if (!writeReg(INA226_REG_CAL, _cal))       { _ok = false; return false; }
+    if (!writeReg(INA230_REG_CONFIG, _config)) { _ok = false; return false; }
+    if (!writeReg(INA230_REG_CAL, _cal))       { _ok = false; return false; }
 
     // ---- 回读校验 ----
     uint16_t rbCfg = 0, rbCal = 0;
-    readReg(INA226_REG_CONFIG, rbCfg);
-    readReg(INA226_REG_CAL, rbCal);
+    readReg(INA230_REG_CONFIG, rbCfg);
+    readReg(INA230_REG_CAL, rbCal);
     _ok = (rbCfg == _config && rbCal == _cal);
     return _ok;
   }
@@ -103,32 +103,32 @@ public:
   }
 
   // ---- 单次读取（连续转换模式下读的是最近一次结果，不阻塞）----
-  bool read(Ina226Reading& r) {
-    r = Ina226Reading();
+  bool read(Ina230Reading& r) {
+    r = Ina230Reading();
     if (!_ok) return false;
     uint16_t raw;
-    if (!readReg(INA226_REG_SHUNT_V, raw)) return false;   r.rawShunt   = raw;
-    if (!readReg(INA226_REG_BUS_V,   raw)) return false;   r.rawBus     = raw;
-    if (!readReg(INA226_REG_CURRENT, raw)) return false;   r.rawCurrent = raw;
-    if (!readReg(INA226_REG_POWER,   raw)) return false;   r.rawPower   = raw;
+    if (!readReg(INA230_REG_SHUNT_V, raw)) return false;   r.rawShunt   = raw;
+    if (!readReg(INA230_REG_BUS_V,   raw)) return false;   r.rawBus     = raw;
+    if (!readReg(INA230_REG_CURRENT, raw)) return false;   r.rawCurrent = raw;
+    if (!readReg(INA230_REG_POWER,   raw)) return false;   r.rawPower   = raw;
 
     int16_t sShunt = (int16_t)r.rawShunt;
     int16_t sCur   = (int16_t)r.rawCurrent;
 
-    float shuntV = sShunt * INA226_SHUNT_LSB_V;
+    float shuntV = sShunt * INA230_SHUNT_LSB_V;
     float currA  = sCur   * _currentLsb;
     if (_invert) { shuntV = -shuntV; currA = -currA; }
 
     r.shuntVolt_mV = shuntV * 1000.0f;
-    r.busVolt_V    = r.rawBus * INA226_BUS_LSB_V;             // 无符号
+    r.busVolt_V    = r.rawBus * INA230_BUS_LSB_V;             // 无符号
     r.current_mA   = currA * 1000.0f;
     r.power_mW     = r.rawPower * (_currentLsb * 25.0f) * 1000.0f;  // Power_LSB = 25 × Current_LSB
     r.ok = true;
     return true;
   }
 
-  bool readBusVoltage(float& v) { Ina226Reading r; if (!read(r)) return false; v = r.busVolt_V; return true; }
-  bool readCurrent(float& mA)   { Ina226Reading r; if (!read(r)) return false; mA = r.current_mA; return true; }
+  bool readBusVoltage(float& v) { Ina230Reading r; if (!read(r)) return false; v = r.busVolt_V; return true; }
+  bool readCurrent(float& mA)   { Ina230Reading r; if (!read(r)) return false; mA = r.current_mA; return true; }
 
   // ---- 状态查询 ----
   bool    ok()           const { return _ok; }
@@ -139,7 +139,7 @@ public:
   float   currentLsb()   const { return _currentLsb; }
   float   rShunt()       const { return _rShunt; }
   // 实际有效分辨率 = 分流电压 LSB ÷ 采样电阻（物理下限，与 Current_LSB 无关）
-  float   currentResolution_mA() const { return (INA226_SHUNT_LSB_V / _rShunt) * 1000.0f; }
+  float   currentResolution_mA() const { return (INA230_SHUNT_LSB_V / _rShunt) * 1000.0f; }
   // 可测电流上限 = 81.92mV ÷ 采样电阻
   float   currentMax_A() const { return 0.08192f / _rShunt; }
 
@@ -147,21 +147,23 @@ public:
   bool getInvert() const { return _invert; }
 
   // ---- 身份/诊断 ----
-  //   ⚠️ 2026-10-02（v2.2）：**放宽身份校验以兼容 INA230**。
-  //      INA230 与 INA226 的引脚/地址/寄存器位域/AVG/转换时间逐项一致，仅 FFh 器件 ID 不同
-  //      （INA230 手册未给该值）。原实现硬校验 `manu==0x5449 && die==0x2260` →
-  //      换 INA230 后 `begin()` 直接失败 → 器件被判"离线" → **低电保护与电量显示整体失效**。
-  //      现改为：**能读回 FEh/FFh 即认为在位**；真实 ID 由调用方打印（首板核对）。
-  //      若日后需要收紧，按首板实测的 ID 加白名单（见 硬件核对清单 第七节 清单 1）。
+  //   ⚠️ 2026-10-02（v2.2）：**本项目只使用 INA230**（INA230 已弃用 —— QFN 手工焊接困难）。
+  //      · INA230 手册（ZHCS766B）：**FEh 制造商 ID 项缺失**（07h 直接跳到 FFh）；
+  //        FFh 仅描述为"ASCII 唯一标识"，**未给具体值**。
+  //      · v2.2 首板（2026-10-02）实测：`MANU=0x0000 DIE=0x0000`；同总线其余器件
+  //        （BMP580/SHT30/DS3231）与总线电压读数均正常 → **全 0 就是 INA230 的真实身份**，
+  //        不是通信故障。
+  //      · 故判定 = **两个 ID 寄存器都能读回**（readReg 成功 = I2C 有 ACK）；
+  //        只有二者皆为 0xFFFF（总线浮空/无器件应答）才判离线。
+  //   ⛔ 不要再写成"全 0 ⇒ 离线"—— 那会把正常工作的 INA230 误判为离线，
+  //      导致低电保护与电量显示整体失效（v2.2 首板踩过）。
   bool checkIdentity(uint16_t* manuOut = nullptr, uint16_t* dieOut = nullptr) {
     uint16_t manu = 0, die = 0;
-    if (!readReg(INA226_REG_MANU_ID, manu)) return false;
-    if (!readReg(INA226_REG_DIE_ID,  die))  return false;
+    if (!readReg(INA230_REG_MANU_ID, manu)) return false;   // I2C 无应答 → 器件不在
+    if (!readReg(INA230_REG_DIE_ID,  die))  return false;
     if (manuOut) *manuOut = manu;
     if (dieOut)  *dieOut  = die;
-    if (manu == 0xFFFF && die == 0xFFFF) return false;   // 全 1 = 总线无应答
-    if (manu == 0x0000 && die == 0x0000) return false;   // 全 0 = 读到空
-    return true;                                          // INA226 / INA230 都放行
+    return !(manu == 0xFFFF && die == 0xFFFF);              // 全 1 = 总线浮空，判离线
   }
 
   // ---- 原始寄存器读写（排障用）----
@@ -195,7 +197,7 @@ public:
   //     bit2:0   MODE    111 = 分流+总线 连续测量
   //   注：MODE 在 bit2:0 而非 bit5:3 —— 由「连续读数正常刷新」反推确认，
   //       若 MODE 在 bit5:3，0x4927 会落到 power-down，读数根本不会更新。
-  static uint16_t buildConfig(Ina226Avg avg, Ina226ConvTime busCt, Ina226ConvTime shuntCt, bool continuous) {
+  static uint16_t buildConfig(Ina230Avg avg, Ina230ConvTime busCt, Ina230ConvTime shuntCt, bool continuous) {
     return ((uint16_t)avg << 12) | ((uint16_t)busCt << 9) | ((uint16_t)shuntCt << 6) |
            (uint16_t)(0b100 << 3) | (continuous ? 0b111 : 0b000);
   }
@@ -218,4 +220,4 @@ private:
   bool     _invert = false;
 };
 
-#endif  // PHT_INA226_H
+#endif  // PHT_INA230_H

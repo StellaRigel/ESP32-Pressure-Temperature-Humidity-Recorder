@@ -47,7 +47,7 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #endif
-#include "ina226.h"        // ← INA226 电池监测（V2.1，替代 IO9 分压）
+#include "ina230.h"        // ← INA230 电池监测（v2.2：INA230 已弃用）
 #include "web_icon.h"      // ← iOS 主屏图标 PNG 字节数组（apple-touch-icon 必须 PNG）
 
 // 电源状态结构体（放在文件顶部：Arduino 会给所有函数生成原型到顶部，
@@ -56,10 +56,10 @@ typedef struct {
   bool  powered;     // 是否外部供电 (PGOOD 低)
   bool  charging;    // 是否充电中 (CHG 低)
   bool  onBattery;   // 是否电池供电
-  float battVolt;    // 电池电压 (V)；INA226 离线时为 NAN（未知）
-  uint8_t battPct;   // 估算电量 (0-100)；INA226 离线时无效(0)
-  // ---- INA226 电池监测（V2.1，唯一电压来源；原 IO9 分压方案已删除）----
-  bool  inaOK;             // INA226 是否在线（false = 电压/电量均不可用）
+  float battVolt;    // 电池电压 (V)；INA230 离线时为 NAN（未知）
+  uint8_t battPct;   // 估算电量 (0-100)；INA230 离线时无效(0)
+  // ---- INA230 电池监测（V2.1，唯一电压来源；原 IO9 分压方案已删除）----
+  bool  inaOK;             // INA230 是否在线（false = 电压/电量均不可用）
   float battCurrent_mA;    // 充放电电流（充电为正、放电为负）
   float battPower_mW;      // 电池端功率
   bool  cvZone;            // 是否进入 CV 区（接近充满）
@@ -1154,7 +1154,7 @@ const int SD_CS = 7;          // v2.2：SD CS -> IO7
 const int PIN_PGOOD = 10;    // 开漏，低=外部电源正常（v2.2：IO2 -> IO10）
 const int PIN_CHG   = 9;     // 开漏，低=充电中（v2.2：IO21 -> IO9）
 // 注：原 PIN_BAT(IO9) 电池分压 ADC 方案已于 V2.1 删除（板上已无 1M 分压电阻），
-//     电池电压唯一来源为 INA226；IO9 释放，留作实体 WiFi 按钮（见设计文档附录 A）。
+//     电池电压唯一来源为 INA230；IO9 释放，留作实体 WiFi 按钮（见设计文档附录 A）。
 
 // ===== 充电控制引脚（V2.1：由 ESP32 软件控制充电）=====
 //   PIN_CE   → BQ24074 CE#（pin4）：低=允许充电；高=停止充电（CE 高有效禁用充电）
@@ -1172,26 +1172,26 @@ const int PIN_PR1  = 18;      // v2.2：TPS2117 PR1（切换 LDO ⇄ 电池直�
 const int PIN_EN1  = 11;
 const int PIN_EN2  = 12;
 
-// ===== 电池监测 INA226（V2.1 新增，替代 IO9 分压方案）=====
+// ===== 电池监测 INA230（v2.2：替代 IO9 分压；INA230 已弃用）=====
 //   I2C 与传感器共用总线（IO47=SDA / IO48=SCL），地址 0x40（A0=A1=GND）
 //   高边 10mΩ 采样电阻跨在 BQ24074@BAT 与电池正极之间，VIN+ 靠 BQ 侧
 //     → 充电时电流为正、放电为负；VBUS 接 VIN-（电池侧）→ 读电池真实电压
-//   驱动实现见同目录 ina226.h（放头文件可绕开 .ino 原型注入的自定义类型问题）
-const int   INA226_ADDR      = 0x40;     // A0=A1=GND
-const float INA226_R_SHUNT   = 0.010f;   // 采样电阻 10 mΩ
-const float INA226_MAX_A     = 1.0f;     // 预期最大电流(A)，用于自动选 Current_LSB
+//   驱动实现见同目录 ina230.h（放头文件可绕开 .ino 原型注入的自定义类型问题）
+const int   INA230_ADDR      = 0x40;     // A0=A1=GND
+const float INA230_R_SHUNT   = 0.010f;   // 采样电阻 10 mΩ
+const float INA230_MAX_A     = 1.0f;     // 预期最大电流(A)，用于自动选 Current_LSB
 const float CHARGE_QUICK_mA  = 890.0f;   // 移动模式快充设定
 const float CHARGE_SLOW_mA   = 297.0f;   // 固定模式慢充设定
 const float CV_ZONE_RATIO    = 0.60f;    // 电流 < 设定值×60% → 判为 CV 区
 const float CV_VOLT_GATE     = 4.05f;    // 电压门限：低于此值不判 CV（防误报）
-INA226 ina226;                           // INA226 驱动对象（ina226.h）
+INA230 ina230;                           // INA230 驱动对象（ina230.h）
 // deviceMode 定义在本文件靠后（设备模式，CV 判定要用），此处先声明
 extern uint8_t deviceMode;
 
-// ===== 低电保护阈值（设计文档三档；仅电池供电且 INA226 在线时判定）=====
+// ===== 低电保护阈值（设计文档三档；仅电池供电且 INA230 在线时判定）=====
 // 插电(PGOOD低)   : 无条件记录，外部电源绝对充足
-// INA226 离线      : 电压未知 → 低电门控整体作废（照常记录、不深睡），仅告警
-// 电池 + INA226在线:
+// INA230 离线      : 电压未知 → 低电门控整体作废（照常记录、不深睡），仅告警
+// 电池 + INA230在线:
 //   电压 ≥ 存档档  → 正常记录
 //   停采档 ~ 存档档 → 存档数据至 SD
 //   深睡档 ~ 停采档 → 停止采集
@@ -1241,9 +1241,9 @@ const int      CAL_MAX_ROWS     = 256;                   // CSV 最多解析行�
 const char*    CAL_CSV_PATH     = "/battcal.csv";
 const char*    CAL_JSON_PATH    = "/battcal.json";
 const char*    CAL_PREV_PATH    = "/battcal.prev.json";
-// INA226 标定期平均窗口：512 × 2 × 8.244ms ≈ 8.4 s（覆盖静置窗口，稀释自身开销）
-const Ina226Avg      CAL_AVG = INA226_AVG_512;
-const Ina226ConvTime CAL_CT  = INA226_CT_8244US;
+// INA230 标定期平均窗口：512 × 2 × 8.244ms ≈ 8.4 s（覆盖静置窗口，稀释自身开销）
+const Ina230Avg      CAL_AVG = INA230_AVG_512;
+const Ina230ConvTime CAL_CT  = INA230_CT_8244US;
 
 // ---- 运行态（全 RAM；标定全程在一个上电周期内完成，掉电即结束）----
 uint8_t  calState       = CAL_OFF;
@@ -1274,8 +1274,8 @@ WiFiUDP calUdp;                       // 标定负载用的 UDP（只在标定�
 
 // 读取电源状态
 // 读取电源状态
-//   电池电压/电流唯一来源 = INA226（原 IO9 分压 ADC 方案已随 V2.1 删除）。
-//   INA226 离线时：battVolt = NAN、battPct = 0、inaOK = false，
+//   电池电压/电流唯一来源 = INA230（原 IO9 分压 ADC 方案已随 V2.1 删除）。
+//   INA230 离线时：battVolt = NAN、battPct = 0、inaOK = false，
 //   上层据此【作废】低电保护与电量显示，改为告警 —— 不得按 0V 误判。
 PowerState readPowerState() {
   PowerState ps = {};
@@ -1287,16 +1287,16 @@ PowerState readPowerState() {
   ps.onBattery = !ps.powered;
 
   ps.inaOK          = false;
-  ps.battVolt       = NAN;      // 未知（INA226 在线时下面覆盖）
+  ps.battVolt       = NAN;      // 未知（INA230 在线时下面覆盖）
   ps.battPct        = 0;
   ps.battCurrent_mA = 0;
   ps.battPower_mW   = 0;
   ps.cvZone         = false;
 
-  // 电池电压/电流：仅 INA226（不再有分压回退）
-  if (ina226.ok()) {
-    Ina226Reading ir;
-    if (ina226.read(ir)) {
+  // 电池电压/电流：仅 INA230（不再有分压回退）
+  if (ina230.ok()) {
+    Ina230Reading ir;
+    if (ina230.read(ir)) {
       ps.inaOK          = true;
       ps.battVolt       = ir.busVolt_V;      // 电池真实对地电压（VBUS 接 VIN-）
       ps.battCurrent_mA = ir.current_mA;     // 充电为正 / 放电为负
@@ -1361,14 +1361,14 @@ void chargeSetEnabled(bool en)   { digitalWrite(PIN_CE, en ? LOW : HIGH); }
 // 当前是否允许充电
 bool chargeIsEnabled()           { return digitalRead(PIN_CE) == LOW; }
 
-// 当前档位对应的设定电流(mA)，供 INA226 闭环校验 / CV 判定使用
+// 当前档位对应的设定电流(mA)，供 INA230 闭环校验 / CV 判定使用
 float chargeSetpoint_mA()        { return chargeIsFast() ? CHARGE_QUICK_mA : CHARGE_SLOW_mA; }
 
 // ===== 设备模式 → 充电策略（设计文档 V2.1 · 充电策略）=====
 //   固定(0)：慢充 + 80% 停充（CE 拉高）；滞回「≥4.05V 停 / ≤4.00V 恢复」→ 约 80% 浮充
 //   移动(1)：快充 + 充满（CE 保持低，由 BQ24074 硬件终止到 4.2V）
 // 说明：CE 拉高只停「充电」，不切断电池补充(UPS)通路，停充期间照常供电/记录。
-//       INA226 离线时无法判电压 → 一律允许充电（fail-safe），仅告警一次。
+//       INA230 离线时无法判电压 → 一律允许充电（fail-safe），仅告警一次。
 const float FIX_STOP_V   = 4.05f;   // 固定停充点（≈80%）
 const float FIX_RESUME_V = 4.00f;   // 固定恢复点（滞回下沿）
 bool fixChargeBlocked = false;      // true = 固定已停充（CE 高）
@@ -1398,7 +1398,7 @@ void applyChargeStrategy(const PowerState& ps) {
   if (!ps.inaOK) {                             // 固定 + INA 离线：无法判定 → 允许充电
     static bool warnedFixNoIna = false;
     if (!warnedFixNoIna) {
-      webLogln("⚠️ INA226 离线：无法判定固定 80% 停充点，暂按「允许充电」处理");
+      webLogln("⚠️ INA230 离线：无法判定固定 80% 停充点，暂按「允许充电」处理");
       warnedFixNoIna = true;
     }
     if (fixChargeBlocked || !chargeIsEnabled()) { fixChargeBlocked = false; chargeSetEnabled(true); }
@@ -3089,12 +3089,12 @@ function loadPowerStatus(){apiFetch('/status').then(function(r){return r.json();
   var pm=document.getElementById('pwrMode'),bp=document.getElementById('battPct'),bv=document.getElementById('battVolt'),ws=document.getElementById('wifiSt');
   if(ws&&s.wifiSsid){ws.title='已保存 '+s.wifiCount+' 组；当前 '+s.wifiSsid+(s.wifiRssi?' ('+s.wifiRssi+' dBm)':'');}
   if(pm){pm.textContent=s.charging?'🔌 充电中':(s.powered?'⚡ 外部供电':(s.onBattery?'🔋 电池':'-'));}
-  // INA226 离线 → 电量/电压/电流/充电阶段整块作废，改为告警（不得按 0V 误判）
+  // INA230 离线 → 电量/电压/电流/充电阶段整块作废，改为告警（不得按 0V 误判）
   var noIna=!s.inaOK;
   if(bp){bp.textContent=noIna?'⚠':(s.onBattery?(s.battPct+'%'):'-');}
   if(bv){bv.textContent=noIna?'--':(s.battVolt===null?'-':s.battVolt.toFixed(2));}
   var bc=document.getElementById('battCur');if(bc){bc.textContent=noIna?'--':((s.battCurrent>0?'+':'')+s.battCurrent.toFixed(0));}
-  var cs=document.getElementById('chgState');if(cs){cs.textContent=noIna?'⚠ INA226 失联':(!s.charging?'未充电':(s.cvZone?'CV(将满)':'CC(充电中)'));}
+  var cs=document.getElementById('chgState');if(cs){cs.textContent=noIna?'⚠ INA230 失联':(!s.charging?'未充电':(s.cvZone?'CV(将满)':'CC(充电中)'));}
   var ml=document.getElementById('modeLbl');if(ml){ml.textContent=noIna?(s.mode===1?'🎒 移动 MOV':'🏠 固定 FIX'):((s.mode===1?'🎒 移动 MOV':'🏠 固定 FIX')+' · '+(s.chgFast?'⚡快充':'🐢慢充')+(s.chgSlow?'(临时)':'')+(s.chgEnabled?'':' 🛡️已停充'));}
   if(ws){ws.textContent=s.wifi; }
 });}
@@ -4010,9 +4010,9 @@ void readAndLog() {
   PowerState ps = readPowerState();
   g_power = ps;                       // 缓存给屏幕/其它模块
   applyChargeStrategy(ps);            // 充电策略随模式/电压联动（固定 80% 停充等）
-  // 记录门控（设计文档三档；仅电池 + INA226 在线时判定）：
+  // 记录门控（设计文档三档；仅电池 + INA230 在线时判定）：
   //   插电(PGOOD低)   → 绝对充足，总是记录
-  //   INA226 离线      → 电压未知，低电门控整体作废（照常记录、不深睡），仅告警
+  //   INA230 离线      → 电压未知，低电门控整体作废（照常记录、不深睡），仅告警
   //   电池 + 电压已知  → <3.6V 存SD / <3.55V 停采 / <3.5V 深睡（V2.1.1-b 上移前为 3.3/3.25/3.2）
   bool allowRecord = true;
   if (ps.powered) {
@@ -4020,7 +4020,7 @@ void readAndLog() {
   } else if (!ps.inaOK) {
     static bool warnedNoIna = false;
     if (!warnedNoIna) {
-      webLogln("⚠️ INA226 离线：电池电压未知，低电保护与电量显示暂失效（继续记录）");
+      webLogln("⚠️ INA230 离线：电池电压未知，低电保护与电量显示暂失效（继续记录）");
       warnedNoIna = true;
     }
   } else {
@@ -4354,22 +4354,24 @@ void setup() {
 
   Wire.begin(47, 48);           // v2.2：I2C -> SDA=IO47 SCL=IO48
 
-  // ---- 电池监测（INA226 / INA230）初始化 —— v2.2 唯一电池电压来源 ----
+  // ---- 电池监测（INA230）初始化 —— v2.2 唯一电池电压来源 ----
   //   ⚠️ 2026-10-02：把 FEh/FFh 的读取与打印**提到 begin() 之前**。
   //      原实现把打印放在 `if (begin(...))` 成功分支里，而 begin() 内含身份校验 →
   //      一旦校验不过（换 INA230）就只打一句"未就绪"，**看不到真实 ID**，无法据此修正校验。
   //      现在无论成败都先打印真实 manu/die（见 硬件核对清单 第七节 清单 1）。
   {
     uint16_t manu = 0, die = 0;
-    bool idOk = ina226.checkIdentity(&manu, &die);
-    webLog("🔎 INA2xx 身份: MANU=0x%04X DIE=0x%04X (%s)\n",
-           manu, die, idOk ? "在位" : "无应答");
-    if (ina226.begin(&Wire, INA226_ADDR, INA226_R_SHUNT, INA226_MAX_A)) {
-      webLog("✅ INA2xx @0x%02X (MANU=0x%04X DIE=0x%04X) CAL=%u %.3fmA/bit 有效分辨率%.3fmA 量程±%.2fA\n",
-             INA226_ADDR, manu, die, ina226.calibration(),
-             ina226.currentLsb() * 1000.0f, ina226.currentResolution_mA(), ina226.currentMax_A());
+    bool idOk = ina230.checkIdentity(&manu, &die);
+    // ⚠️ INA230 实测 MANU/DIE = 0x0000/0x0000（手册无 FEh 项、FFh 未给值）→ **全 0 是正常的**，
+    //    不能据此判"无应答"（那是 0xFFFF 总线浮空的含义）。只有全 1 才算不在。
+    webLog("🔎 INA230 身份: MANU=0x%04X DIE=0x%04X (%s)\n",
+           manu, die, idOk ? "在位(全0为INA230正常值)" : "无应答(总线浮空)");
+    if (ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A)) {
+      webLog("✅ INA230 @0x%02X (MANU=0x%04X DIE=0x%04X) CAL=%u %.3fmA/bit 有效分辨率%.3fmA 量程±%.2fA\n",
+             INA230_ADDR, manu, die, ina230.calibration(),
+             ina230.currentLsb() * 1000.0f, ina230.currentResolution_mA(), ina230.currentMax_A());
     } else {
-      webLog("⚠️ INA2xx @0x%02X 未就绪：电池电压/电量不可用，低电保护暂失效（屏幕与网页将告警）\n", INA226_ADDR);
+      webLog("⚠️ INA230 @0x%02X 未就绪：电池电压/电量不可用，低电保护暂失效（屏幕与网页将告警）\n", INA230_ADDR);
     }
   }
 
@@ -4393,7 +4395,7 @@ void setup() {
   if (psWake.powered) {
     webLogln("🔌 外部电源供电，正常工作");
   } else if (!psWake.inaOK) {
-    webLogln("⚠️ INA226 离线：电池电压未知，本次会话低电保护与电量显示暂失效");
+    webLogln("⚠️ INA230 离线：电池电压未知，本次会话低电保护与电量显示暂失效");
   } else if (psWake.battVolt < battStopV) {
     webLogln("🔋 电池电压 %.2fV < %.2fV，本次会话将跳过写入（直到插电或电压回升）", psWake.battVolt, battStopV);
   } else {
@@ -4559,43 +4561,43 @@ void calCpuBurn(uint32_t ms) {
   while ((uint32_t)(millis() - t0) < ms) { }
 }
 
-// INA226 配置切换：标定期尽量用大平均窗口（理想 1024/512 × 2 × 8.244ms）
-//   ⚠️ 实测踩坑（2026-09-15）：这块 INA226 的 **AVG=6(512) / 7(1024) 写进去会被夹到 4(128)**
+// INA230 配置切换：标定期尽量用大平均窗口（理想 1024/512 × 2 × 8.244ms）
+//   ⚠️ 实测踩坑（2026-09-15）：这块 INA230 的 **AVG=6(512) / 7(1024) 写进去会被夹到 4(128)**
 //      （期望 0x6FE7 回读 0x4FE7，只差 bit13）→ 故先探测芯片真正接受的 AVG，再用它 begin()
 //   窗口 = AVG × 2 × 8.244ms；AVG=128 → ≈2.1s，已足够盖住静置尾段
 bool calInaBegin(bool calMode) {
-  static const Ina226Avg A[4]  = { INA226_AVG_1024, INA226_AVG_512, INA226_AVG_256, INA226_AVG_128 };
+  static const Ina230Avg A[4]  = { INA230_AVG_1024, INA230_AVG_512, INA230_AVG_256, INA230_AVG_128 };
   static const uint16_t  AN[4] = { 1024, 512, 256, 128 };
   if (!calMode) {
-    bool ok = ina226.begin(&Wire, INA226_ADDR, INA226_R_SHUNT, INA226_MAX_A);
-    webLog("🔧 INA226 重配(常规)：%s CONFIG=0x%04X\n", ok ? "OK" : "失败", ina226.configWord());
+    bool ok = ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A);
+    webLog("🔧 INA230 重配(常规)：%s CONFIG=0x%04X\n", ok ? "OK" : "失败", ina230.configWord());
     return ok;
   }
   int best = -1; uint16_t bad = 0, rbad = 0;
   for (int i = 0; i < 4; i++) {
-    uint16_t want = INA226::buildConfig(A[i], CAL_CT, CAL_CT, true);
-    if (!ina226.writeReg(INA226_REG_CONFIG, want)) { delay(10); continue; }
+    uint16_t want = INA230::buildConfig(A[i], CAL_CT, CAL_CT, true);
+    if (!ina230.writeReg(INA230_REG_CONFIG, want)) { delay(10); continue; }
     delay(10);
-    uint16_t rb = 0; ina226.readReg(INA226_REG_CONFIG, rb);
+    uint16_t rb = 0; ina230.readReg(INA230_REG_CONFIG, rb);
     if (rb == want) { best = i; break; }
     bad = want; rbad = rb;
   }
   if (best < 0) {
-    webLog("⚠️ 标定：INA226 大窗口一个都不生效（如 0x%04X→0x%04X）→ 用默认 281ms\n", bad, rbad);
-    ina226.begin(&Wire, INA226_ADDR, INA226_R_SHUNT, INA226_MAX_A);
+    webLog("⚠️ 标定：INA230 大窗口一个都不生效（如 0x%04X→0x%04X）→ 用默认 281ms\n", bad, rbad);
+    ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A);
     return false;
   }
-  bool ok = ina226.begin(&Wire, INA226_ADDR, INA226_R_SHUNT, INA226_MAX_A, A[best], CAL_CT, CAL_CT);
-  webLog("🔧 INA226 重配(标定)：%s AVG=%u 窗口≈%.2fs CONFIG=0x%04X\n",
-         ok ? "OK" : "失败", AN[best], AN[best] * 2 * 0.008244f, ina226.configWord());
-  if (!ok) ina226.begin(&Wire, INA226_ADDR, INA226_R_SHUNT, INA226_MAX_A);
+  bool ok = ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A, A[best], CAL_CT, CAL_CT);
+  webLog("🔧 INA230 重配(标定)：%s AVG=%u 窗口≈%.2fs CONFIG=0x%04X\n",
+         ok ? "OK" : "失败", AN[best], AN[best] * 2 * 0.008244f, ina230.configWord());
+  if (!ok) ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A);
   return ok;
 }
 
-// 只读 INA226（观察者效应：醒来第一件事就只剩这个动作）
+// 只读 INA230（观察者效应：醒来第一件事就只剩这个动作）
 void calReadIna(float& v, float& i) {
-  Ina226Reading ir;
-  if (ina226.read(ir)) { v = ir.busVolt_V; i = ir.current_mA; }
+  Ina230Reading ir;
+  if (ina230.read(ir)) { v = ir.busVolt_V; i = ir.current_mA; }
 }
 
 // NVS 标志：标定进行中（掉电重启后靠它知道要建表）
@@ -4852,7 +4854,7 @@ bool calStartCheck(bool dry, String& why) {
   if (calState == CAL_ARM || calState == CAL_RUN) { why = "已在标定中"; return false; }
   if (deviceMode != 1) { why = "仅【移动模式】可标定（固定只充到 80%，不能当 100% 基准）"; return false; }
   PowerState ps = readPowerState();
-  if (!ps.inaOK) { why = "INA226 离线，电压不可信"; return false; }
+  if (!ps.inaOK) { why = "INA230 离线，电压不可信"; return false; }
   if (!dry) {
     if (!ps.powered)  { why = "请先插上充电器"; return false; }
     if (ps.charging)  { why = "正在充电：等 BQ 停充（充满）后再开始"; return false; }
@@ -4973,7 +4975,7 @@ void serviceCal() {
       if (calDry) server.handleClient();
       delay(1000);
     }
-    calReadIna(calVRest, calIRest);        // 醒来第一件事：只读 INA226（观察者效应）
+    calReadIna(calVRest, calIRest);        // 醒来第一件事：只读 INA230（观察者效应）
     calLoadedMs += calCycleLoadMs;
     calCsvRow(calLoadedMs, calCycleLoadMs);
     calCycles++;
@@ -5115,8 +5117,8 @@ void calBootCheck() {
 //        与时序仪表的用途不符。
 //   做法：**只读 GPIO / I2C，不碰采样、不写 SD** → 数据采集节奏完全不变（底线）。
 //     ① 插拔(PGOOD) / 充电(CHG)：纯 GPIO，loop 每圈查（µs 级）→ 变化立刻刷顶栏，
-//        并预约 +800ms 用新鲜 INA226 补刷一次（等电流/CC·CV 稳一下）
-//     ② 每 5s：查 WiFi.status() + 读一次 INA226（~1ms），但**只有屏幕上会变的量**
+//        并预约 +800ms 用新鲜 INA230 补刷一次（等电流/CC·CV 稳一下）
+//     ② 每 5s：查 WiFi.status() + 读一次 INA230（~1ms），但**只有屏幕上会变的量**
 //        （电量% / CC·CV / INA 在线 / 无线图标 / 分钟）真的变了才刷
 //        → 电池放电时仍约 1 次/分钟，与原来“整分钟刷”同量级，不额外费电；
 //        插电时 5s 内就能看到 CC→CV 与电量爬升
