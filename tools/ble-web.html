@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PHT_2_0 蓝牙测试（只读）</title>
+<style>
+body{font-family:-apple-system,'Segoe UI',sans-serif;background:#f5f7fa;color:#222;padding:12px;max-width:720px;margin:0 auto}
+h2{font-size:18px}
+.card{background:#fff;border-radius:10px;padding:14px;margin:10px 0;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.btn{display:inline-block;padding:10px 16px;margin:4px 6px 4px 0;border-radius:8px;border:0;color:#fff;background:#2e7d32;font-size:15px;cursor:pointer}
+.btn:disabled{background:#bbb;cursor:default}
+.btn-gray{background:#607d8b}
+.muted{color:#888;font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td{padding:6px 4px;border-bottom:1px solid #eee}
+td:first-child{color:#666;width:42%}
+.ok{color:#28a745;font-weight:bold}
+.err{color:#e74c3c;font-weight:bold}
+code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>📶 PHT_2_0 蓝牙测试页 <span class="muted">（只读）</span></h2>
+  <p class="muted">用 Android Chrome 打开本文件 → 点「连接设备」→ 选 <code>PHT_2_0</code>。
+     设备端需处于蓝牙模式：移动模式 + 电池供电（或先用 <code>/wireless?force=ble</code> 强制）。</p>
+  <button class="btn" id="btnConn">🔗 连接设备</button>
+  <button class="btn btn-gray" id="btnRead" disabled>🔄 读取状态</button>
+  <div id="state" class="muted">未连接</div>
+</div>
+
+<div class="card" id="dataCard" style="display:none">
+  <h2>设备状态</h2>
+  <table id="tbl"></table>
+  <p class="muted" id="rawToggle" style="cursor:pointer">▸ 显示原始 JSON</p>
+  <pre id="raw" style="display:none;overflow:auto;font-size:12px;background:#f7f7f7;padding:8px;border-radius:6px"></pre>
+</div>
+
+<div class="card">
+  <h2>链路日志</h2>
+  <pre id="log" style="font-size:12px;background:#f7f7f7;padding:8px;border-radius:6px;max-height:220px;overflow:auto"></pre>
+</div>
+
+<script>
+// ---- 与固件约定：Service + RX(write) + TX(notify)，请求写 "GET /path\n"，响应到 '\n' 结束 ----
+const SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+let dev = null, rxChar = null, txChar = null;
+let acc = '', resolver = null, timer = null;      // 响应按 '\n' 结尾分帧累积
+const log = s => { const e = document.getElementById('log'); e.textContent += s + '\n'; e.scrollTop = e.scrollHeight; };
+
+function onNotify(ev) {
+  acc += new TextDecoder().decode(ev.target.value);
+  let i;
+  while ((i = acc.indexOf('\n')) >= 0) {
+    const line = acc.slice(0, i);
+    acc = acc.slice(i + 1);
+    if (resolver) { const r = resolver; resolver = null; clearTimeout(timer); r(line); }
+  }
+}
+
+function request(path, ms = 15000) {
+  return new Promise((res, rej) => {
+    if (!rxChar || !txChar) return rej(new Error('未连接'));
+    if (resolver) return rej(new Error('上一次请求还没回'));
+    resolver = res;
+    timer = setTimeout(() => { resolver = null; rej(new Error('超时')); }, ms);
+    rxChar.writeValue(new TextEncoder().encode('GET ' + path + '\n'))
+      .catch(e => { if (resolver) { resolver = null; clearTimeout(timer); rej(e); } });
+  });
+}
+
+document.getElementById('btnConn').onclick = async () => {
+  try {
+    log('请求蓝牙设备…');
+    dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    log('已选: ' + dev.name);
+    dev.addEventListener('gattserverdisconnected', () => { log('⚠️ 连接断开'); setConn(false); });
+    const srv = await dev.gatt.connect();
+    const svc = await srv.getPrimaryService(SVC);
+    rxChar = await svc.getCharacteristic(RX);
+    txChar = await svc.getCharacteristic(TX);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onNotify);
+    setConn(true);
+    log('✅ 已连接并订阅通知');
+    readStatus();
+  } catch (e) { log('❌ ' + e.message); }
+};
+
+document.getElementById('btnRead').onclick = readStatus;
+
+async function readStatus() {
+  try {
+    const t0 = performance.now();
+    const txt = await request('/status');
+    const ms = Math.round(performance.now() - t0);
+    log(`收到 ${txt.length} 字节（${ms} ms）`);
+    const s = JSON.parse(txt);
+    render(s);
+  } catch (e) { log('❌ 读取失败: ' + e.message); }
+}
+
+function render(s) {
+  document.getElementById('dataCard').style.display = '';
+  document.getElementById('raw').textContent = JSON.stringify(s, null, 1);
+  const rows = [
+    ['记录的样本数', s.count],
+    ['采样间隔', s.interval + ' s'],
+    ['设备模式', s.mode === 1 ? 'MOV 移动' : 'FIX 固定'],
+    ['无线（固件）', s.wireless === 2 ? '蓝牙' : (s.wireless === 1 ? 'WiFi' : '无')],
+    ['电池电压', s.battVolt == null ? 'INA226 离线' : s.battVolt + ' V'],
+    ['电量', s.battPct + ' %'],
+    ['供电', s.powered ? '外接' : (s.onBattery ? '电池' : '-')],
+    ['充电', s.charging ? '充电中' : (s.chgEnabled ? '未充' : '停充')],
+    ['传感器', `BMP580 ${s.bmpOK ? '✓' : '✗'} / SHT30 ${s.shtOK ? '✓' : '✗'} / RTC ${s.rtcOK ? '✓' : '✗'} / SD ${s.sdOK ? '✓' : '✗'}`],
+    ['WiFi 配置组数', s.wifiCount],
+    ['网页能力 caps', JSON.stringify(s.caps)],
+  ];
+  document.getElementById('tbl').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+}
+
+document.getElementById('rawToggle').onclick = () => {
+  const e = document.getElementById('raw');
+  e.style.display = e.style.display === 'none' ? 'block' : 'none';
+};
+
+function setConn(on) {
+  document.getElementById('btnConn').disabled = on;
+  document.getElementById('btnRead').disabled = !on;
+  document.getElementById('state').innerHTML = on
+    ? '<span class="ok">已连接</span> ' + (dev && dev.name ? dev.name : '')
+    : '<span class="err">未连接</span>';
+}
+setConn(false);
+if (!navigator.bluetooth) log('⚠️ 此浏览器不支持 Web Bluetooth（需 Android Chrome；iOS Safari 不支持）');
+</script>
+</body>
+</html>
