@@ -139,6 +139,7 @@ public:
     bool    charging = false;          // 充电中
     bool    cvPhase  = false;          // 充电相位: false=CC(恒流) true=CV(恒压)
     bool    inaValid = true;           // INA230 是否在线（false → 电量/电池区改显告警）
+    bool    pr1Direct = false;         // v2.2：TPS2117 是否电池直供（VIN1）；true → 顶栏显示直供标识
     uint8_t battPct  = 0;              // 电量 0..100（仅 inaValid 时有效）
     uint8_t wifiStat = UI_WIFI_OFF;    // UI_WIFI_OFF / STA / AP
     bool    onSite   = true;           // true=固定(FIX) false=移动(MOV)
@@ -159,6 +160,18 @@ public:
         cvPhase  = cv;                            // 来自 INA230 cvZone
         inaValid = inaOK;                         // false → 电量/电池区改为告警
         battPct  = pct;
+    }
+    // v2.2：TPS2117 PR1 电源通路 —— true = 电池直供（VIN1），false = LDO（VIN2）
+    void setPr1(bool batteryDirect) { pr1Direct = batteryDirect; }
+    // ---- 直供标识 (11x11)：电池直供时画在顶栏 FIX/MOV 与电量之间的空档 ----
+    //   只在"电池直供"这个**罕见的低压状态**下出现，常态不占位，避免顶栏拥挤。
+    //   位置 x=95,y=3：FIX/MOV 结束于 x≈83（留 12px 间隙），指示区起点 x=152 之后才被占用。
+    void drawPr1Mark(int lx, int ly) {
+        for (int x = 0; x <= 10; x++) { px(lx + x, ly, true); px(lx + x, ly + 10, true); }
+        for (int y = 1; y <= 9;  y++) { px(lx, ly + y, true); px(lx + 10, ly + y, true); }
+        px(lx + 3, ly + 3, true); px(lx + 4, ly + 3, true);          // 内部一个"直通"小点
+        px(lx + 6, ly + 5, true); px(lx + 7, ly + 5, true);
+        px(lx + 3, ly + 7, true); px(lx + 4, ly + 7, true);
     }
     void setWifi(uint8_t st)   { wifiStat = st; }
     void setMode(uint8_t mode) { onSite = (mode == 0); }   // 0=固定 1=移动
@@ -486,6 +499,9 @@ private:
             drawText(198 - textWidth(b, true), 1, b, true);
             drawBattery(209, 4, battLevel(battPct));
         }
+
+        // v2.2：电池直供标识（仅直供时出现）
+        if (pr1Direct) drawPr1Mark(95, 3);
 
         // WiFi
             if (wifiStat == UI_WIFI_BLE) { int bw = textWidth("bt", true); drawText(246 - bw, 2, "bt", true); }   // 蓝牙：小写 bt 更窄更小，右对齐留余量   // 蓝牙：右对齐到右缘 248、上移   // 蓝牙：直接写文字，不画点阵

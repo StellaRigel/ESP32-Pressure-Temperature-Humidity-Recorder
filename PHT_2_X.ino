@@ -47,7 +47,15 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #endif
-#include "ina230.h"        // ← INA230 电池监测（v2.2：INA230 已弃用）
+#include "ina230.h"        // ← INA230 电池监测（v2.2：取代 INA226）
+
+// ===== USB 枚举检测（v2.2 · BQ24074 EN1/EN2 三档切换）=====
+//   机制：USB 枚举成功 → EN1/EN2=(0,1) USB500 档；失败 → (1,0) ISET 档。
+//   ⚠️ **靠 USB 供电刷机的那台测试机必须置 0**：它依赖 USB 供电，一旦按枚举结果切档
+//      可能掉电/影响刷机；其余设备正常识别并切换。
+//   用法：默认 0（安全）。启用请改 1 后编译。
+//   依据：硬件核对清单 第五节清单 3（待实装）。
+#define USB_ENUM_DETECT 0
 #include "web_icon.h"      // ← iOS 主屏图标 PNG 字节数组（apple-touch-icon 必须 PNG）
 
 // 电源状态结构体（放在文件顶部：Arduino 会给所有函数生成原型到顶部，
@@ -1172,19 +1180,19 @@ const int PIN_CHG   = 9;     // 开漏，低=充电中（v2.2：IO21 -> IO9）
 //   PIN_CE   → BQ24074 CE#（pin4）：低=允许充电；高=停止充电（CE 高有效禁用充电）
 //   PIN_ISET → ISET 切换 MOS(AO3400A)栅极：高=快充(短路R7，等效 1k → ≈890mA)
 //                                         低=慢充(1k+2k 串联 3k → ≈297mA)
-// 注：BQ24074 EN1/EN2 由板上 3P 排针硬件跳线配置（外部电源/USB500/USB100），软件不介入。
+// 注：BQ24074 的 EN1/EN2 **由 GPIO 软件控制**（IO11/IO12）；v2.1 的 3P 硬件跳线方案已作废
 const int PIN_CE   = 13;      // v2.2：IO17 -> IO13（BQ24074 CE#，低=允许充电）
 const int PIN_ISET = 17;      // v2.2：IO18 -> IO17（IO18 让给 TPS2117 PR1）
 // ===== TPS2117 电源多路复用 PR1（v2.2 新增）=====
 //   PR1 ≥ VREF(≈1 V) → 选 VIN1（电池直供）；PR1 低 → 选 VIN2（LDO 输出）
 //   板上已加下拉 → 上电默认低 = LDO 供电（安全默认）；固件只在低压时"单向收紧"抬为高
 const int PIN_PR1  = 18;      // v2.2：TPS2117 PR1（切换 LDO ⇄ 电池直供）
-// ⚠️ BQ24074 的 EN1/EN2 在 v2.2 板接到 IO11/IO12（v2.1 是硬件跳线），本版固件暂不驱动，
-//    保持板上默认 (0,0) = USB100 最保守档；待 USB 枚举检测实装后再接管（见硬件核对清单 7.1 清单 3）
+// ⚠️ BQ24074 的 EN1/EN2 在 v2.2 板接到 IO11/IO12；**本版固件暂不驱动**（保持引脚默认电平），
+//    待 USB 枚举检测实装后再接管（见上方 USB_ENUM_DETECT 与 硬件核对清单 第五节清单 3）
 const int PIN_EN1  = 11;
 const int PIN_EN2  = 12;
 
-// ===== 电池监测 INA230（v2.2：替代 IO9 分压；INA230 已弃用）=====
+// ===== 电池监测 INA230（v2.2：替代 IO9 分压；INA226 已弃用）=====
 //   I2C 与传感器共用总线（IO47=SDA / IO48=SCL），地址 0x40（A0=A1=GND）
 //   高边 10mΩ 采样电阻跨在 BQ24074@BAT 与电池正极之间，VIN+ 靠 BQ 侧
 //     → 充电时电流为正、放电为负；VBUS 接 VIN-（电池侧）→ 读电池真实电压
@@ -2503,6 +2511,7 @@ void buildSsidLine(char* out, size_t n, const char* ssid) {
 // 把最新状态同步进屏幕对象（同步完记得重绘）
 void uiSyncStatus() {
   uiDisplay.setPower(g_power.charging, g_power.cvZone, g_power.inaOK, g_power.battPct);
+  uiDisplay.setPr1(pr1BatteryDirect);        // v2.2：电池直供时顶栏显示标识
   uiDisplay.setWifi(curWireless == WL_BLE ? UI_WIFI_BLE : wifiUIState());   // 蓝牙态显示 BT
   uiDisplay.setMode(deviceMode);
 }
@@ -2536,6 +2545,15 @@ String buildStatusJson(bool overBLE) {
              ",\"chgFast\":" + (chargeIsFast()?"true":"false") +
              ",\"chgEnabled\":" + (chargeIsEnabled()?"true":"false") +
              ",\"chgSlow\":" + (chargeForceSlow?"true":"false") +      // V2.1.1-a：移动+插电时临时慢充
+             // ---- TPS2117 PR1 电源通路（v2.2）----
+             //   pr1Raw  = 引脚**实际回读电平**（比状态变量可信：能发现"写了但没生效"）
+             //   pr1Safe = 是否处于安全态（仅在电压 ≤ 硬上限时才允许电池直供）
+             ",\"pr1\":\"" + (pr1BatteryDirect ? "VIN1_BATTERY_DIRECT" : "VIN2_LDO") + "\"" +
+             ",\"pr1Raw\":" + String(digitalRead(PIN_PR1)) +
+             ",\"pr1Safe\":" + ((!pr1BatteryDirect || ps.battVolt <= PR1_HARD_MAX) ? "true" : "false") +
+             ",\"pr1Thr\":{\"on\":" + String(PR1_ON_V, 2) +
+                            ",\"off\":" + String(PR1_OFF_V, 2) +
+                            ",\"hardMax\":" + String(PR1_HARD_MAX, 2) + "}" +
              ",\"topRefresh\":" + String(topRefreshCount) +                // V2.1.1-c：顶栏即时重画计数（自检/验证用）
              ",\"wifi\":\"" + String(WiFi.status()==WL_CONNECTED?"已连接":(apEnabled?"AP":"未连接")) + "\"" +
              ",\"wifiSsid\":\"" + String(WiFi.status()==WL_CONNECTED ? WiFi.SSID() : String(wifiCfg.ssid)) + "\"" +
@@ -4655,7 +4673,7 @@ void calCpuBurn(uint32_t ms) {
 }
 
 // INA230 配置切换：标定期尽量用大平均窗口（理想 1024/512 × 2 × 8.244ms）
-//   ⚠️ 实测踩坑（2026-09-15）：这块 INA230 的 **AVG=6(512) / 7(1024) 写进去会被夹到 4(128)**
+//   ⚠️ 实测踩坑（2026-09-15，**当时是 INA226**）：该片的 **AVG=6(512) / 7(1024) 写进去会被夹到 4(128)**
 //      （期望 0x6FE7 回读 0x4FE7，只差 bit13）→ 故先探测芯片真正接受的 AVG，再用它 begin()
 //   窗口 = AVG × 2 × 8.244ms；AVG=128 → ≈2.1s，已足够盖住静置尾段
 bool calInaBegin(bool calMode) {
