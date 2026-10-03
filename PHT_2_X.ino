@@ -1444,6 +1444,8 @@ void serviceUsbEnum() {
     // ===== USB 主机（电脑）=====
     usbEnumState   = ENUM_IS_HOST;
     usbAllowCharge = usbChargingViable;           // 由实测决定（见 usbChargingViable）
+    //   ⚠️ 冷启动（电池没电）不否决枚举结果：若日后实测 USB500 下可充，
+    //      这里会自然生效；冷启动只影响"启动期先不充、把电流让给系统"。
     // 保持 EN1=高 / EN2=低 = USB500（已在 chargeInit 设好）
     webLog("🔎 USB 枚举：**主机**（SOF 帧号 %lu→%lu 在动）→ 保持 USB500(500mA)，%s\n",
            (unsigned long)a, (unsigned long)b, usbAllowCharge ? "允许充电" : "**禁止充电**");
@@ -1466,6 +1468,52 @@ void serviceUsbEnum() {
 
   if (usbAllowCharge) digitalWrite(PIN_CE, LOW);   // 放行充电
   else                digitalWrite(PIN_CE, HIGH);  // 锁死禁充
+}
+// 读一次电池电压（INA230）；无效返回 NAN。
+//   ⚠️ 必须在 ina230.begin() 之后调用。
+static float readBatteryVoltage() {
+  if (!ina230.ok()) return NAN;
+  Ina230Reading r;
+  if (!ina230.read(r)) return NAN;
+  return r.busVolt_V;
+}
+
+// ===== 冷启动 / 热启动 分流（2026-10-03 实装 · 设计文档 V2.2 电源管理模块）=====
+//   设备封装后电池永不拔除 ⇒ **冷启动只可能是"电池没电"**；
+//   另一种上电是用户拨 EN 开关（此时电池通常有电）。
+//   故按 VBAT 分流（阈值 PWR_COLD_START_V = 3.6V，用户定 —— 取得太保守会让拨 EN 开机体验变差）：
+//     VBAT >= 3.6V → 【热启动】沿用老逻辑：允许充电，档位按 deviceMode 走
+//     VBAT <  3.6V → 【冷启动】保持禁充（系统优先起），充电交由 serviceUsbEnum() 定
+//   ⚠️ 调用时机：**必须在 INA230 初始化之后**（chargeInit 太早，那时读不到电压）。
+bool pwrColdStart = false;      // true = 本次为冷启动
+bool pwrStartupDone = false;    // 是否已分流
+bool pwrStartupChargeOk = false;// 热启动时置 true → 启动期即可充电
+
+void serviceBatteryStartup() {
+  if (pwrStartupDone) return;
+  pwrStartupDone = true;
+
+  float v = readBatteryVoltage();
+  if (isnan(v)) {
+    // 读不到电压 → 无法判断 → 按**冷启动**保守处理（宁慢不错）
+    pwrColdStart = true;
+    webLogln("🔋 启动分流：电池电压不可读 → 按【冷启动】保守处理（保持禁充，待枚举）");
+    return;
+  }
+
+  if (v >= PWR_COLD_START_V) {
+    pwrColdStart = false;
+    pwrStartupChargeOk = true;
+    usbAllowCharge = true;      // 热启动：电池有电 → 提前放行充电（用户无感）
+                                //   之后 serviceUsbEnum() 若判定为 USB 主机，会按实测结论收回
+    webLog("🔋 启动分流：VBAT=%.3fV ≥ %.1fV → 【热启动】（拨 EN 开机）→ 沿用老逻辑，允许充电\n",
+           v, PWR_COLD_START_V);
+  } else {
+    pwrColdStart = true;
+    pwrStartupChargeOk = false;
+    webLog("🔋 启动分流：VBAT=%.3fV < %.1fV → 【冷启动】（电池没电）→ 保持禁充，系统优先启动\n",
+           v, PWR_COLD_START_V);
+  }
 }
 void chargeInit() {
   // 上电安全默认。
@@ -1493,10 +1541,14 @@ void chargeInit() {
   // ---- 充电使能：启动期一律**先禁充**（系统优先），由 serviceUsbEnum 事后放行 ----
   //   理由：供电受限时充电会和系统抢同一份输入电流；系统起不来就没有后续可言。
 #if PWR_SAFE_START
-  digitalWrite(PIN_CE, HIGH);     // 禁止充电（安全默认）
-  webLogln("🔌 【安全启动】输入限流=USB500(500mA) | CE=高(禁充，待枚举后再定)");
+  // 【安全启动】CE 先保持**高（禁充）**，把输入电流全留给系统。
+  //   之后由两处按运行期条件放行：
+  //     · serviceBatteryStartup()：热启动（VBAT>=3.6V）→ 直接放行（沿用老逻辑，用户无感）
+  //     · serviceUsbEnum()      ：判定为充电器 → 放行；判定为 USB 主机 → 保持禁充
+  digitalWrite(PIN_CE, HIGH);
+  webLogln("🔌 【安全启动】输入限流=USB500(500mA) | CE=高(禁充，待分流/枚举后再定)");
 #else
-  digitalWrite(PIN_CE, LOW);      // 老逻辑：允许充电
+  digitalWrite(PIN_CE, LOW);      // 老逻辑：允许充电（且 EN1/EN2 不驱动 → 保持上电默认 USB100）
   webLogln("🔌 充电控制初始态：允许充电 | 输入限流 = 上电默认 (0,0)=USB100");
 #endif
   digitalWrite(PIN_ISET, LOW);    // 兜底复写
@@ -1640,6 +1692,10 @@ void applyChargeStrategy(const PowerState& ps) {
   //      #if 是编译期求值，会把运行期变量当成 0，导致条件恒真、
   //      永远走"禁充 + return"，把 serviceUsbEnum() 拉低的 CE 又拉回去。
   //      （2026-10-03 实测踩到：插充电器时 allowCharge=true 但 chgEnabled=false）
+  // ★ 充电使能**由枚举结果决定**（usbAllowCharge）。
+  //   冷/热启动只影响"启动期是否提前充电"，不影响运行期充电权：
+  //     热启动 → serviceBatteryStartup() 提前把 usbAllowCharge 置 true（用户无感）
+  //     冷启动 → 保持禁充，等 serviceUsbEnum() 判完再说（充电器仍会允许充电）
   if (!usbAllowCharge) {
     digitalWrite(PIN_CE, HIGH);      // 未获准充电 → 锁死禁充
     return;
@@ -4822,6 +4878,9 @@ void setup() {
   // ===== USB 枚举：判定对端是"电脑主机"还是"充电器"，据此定 EN1/EN2 与充电使能 =====
   //   放在此处（服务器已起、webLog 可用）——它是阻塞的（约 3s 观察 SOF 帧号），
   //   但此时系统已完全启动、电源已稳，不怕这点延迟。
+  // ---- 冷启动 / 热启动 分流（须在 INA230 之后）----
+  serviceBatteryStartup();
+
   serviceUsbEnum();
 }
 
