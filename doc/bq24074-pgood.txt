@@ -1,0 +1,353 @@
+
+========== 第 1 页 ==========
+    * Proprietary start-up sequence limits inrush current
+    * Status indication - charging/done, power good
+    * Safety-Related Certification:
+    - IEC 62368-1 Certification (BQ24072)
+    2 Applications
+    * TWS Charging case and headphones
+    * Gaming accessory
+    ---
+    1 k/c87
+    PGOOD
+    CHG
+    EN1
+    ILM
+    CE
+    TMR
+    ---
+
+========== 第 4 页 ==========
+    * Changed the Functional Block Diagram .......................................................................................................... 18
+    * Changed text in section - STATUS INDICATORS ( PGOOD, CHG).................................................................28
+    * Changed Table - CHG STATUS INDICATOR................................................................................................... 28
+    * Changed Equation 8 and Equation 9 ...............................................................................................................29
+    * Changed APPLICATION CIRCUITS section.................................................................................................... 33
+    * Added Using BQ24075 to Disconnect the Battery from the System, Figure 10-13.......................................... 38
+    * Changed section - Half-Wave Adaptors............................................................................................................39
+    ---
+
+========== 第 7 页 ==========
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+    Not to scale
+    Thermal
+    ---
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+    Not to scale
+    Thermal
+    ---
+
+========== 第 8 页 ==========
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+    Not to scale
+    Thermal
+    ---
+    with a 4.7-μF to 47-μF ceramic capacitor.
+    PGOOD 7 7 7 O
+    Open-drain Power Good Status Indication Output. PGOOD pulls to VSS when a valid input source is
+    detected. PGOOD is high-impedance when the input power is not within specified limits. Connect PGOOD to
+    the desired logic voltage rail using a 1-kΩ to 100-kΩ resistor, or use with an LED for visual indication.
+    SYSOFF - - 15 I
+    System Enable Input. Connect SYSOFF high to turn off the FET connecting the battery to the system
+    ---
+    PGOOD 7 7 7 O
+    Open-drain Power Good Status Indication Output. PGOOD pulls to VSS when a valid input source is
+    detected. PGOOD is high-impedance when the input power is not within specified limits. Connect PGOOD to
+    the desired logic voltage rail using a 1-kΩ to 100-kΩ resistor, or use with an LED for visual indication.
+    SYSOFF - - 15 I
+    System Enable Input. Connect SYSOFF high to turn off the FET connecting the battery to the system
+    output. When an adapter is connected, charging is also disabled. Connect SYSOFF low for normal operation.
+    ---
+    Open-drain Power Good Status Indication Output. PGOOD pulls to VSS when a valid input source is
+    detected. PGOOD is high-impedance when the input power is not within specified limits. Connect PGOOD to
+    the desired logic voltage rail using a 1-kΩ to 100-kΩ resistor, or use with an LED for visual indication.
+    SYSOFF - - 15 I
+    System Enable Input. Connect SYSOFF high to turn off the FET connecting the battery to the system
+    output. When an adapter is connected, charging is also disabled. Connect SYSOFF low for normal operation.
+    SYSOFF is internally pulled up to VBAT through a large resistor (approximately 5 MΩ). Do not leave SYSOFF
+    ---
+
+========== 第 10 页 ==========
+    BAT (with respect to VSS) -0.3 5 V
+    OUT, EN1, EN2, CE, TS, ISET, PGOOD, CHG, ILIM,
+    TMR, ITERM, SYSOFF, TD (with respect to VSS) -0.3 7 V
+    II Input Current IN 1.6 A
+    IO
+    Output Current
+    (Continuous)
+    ---
+    BAT (Charging mode) 1.5(2) A
+    Output Sink Current CHG, PGOOD 15 mA
+    TJ Junction temperature -40 150 degC
+    Tstg Storage temperature -65 150 degC
+    (1) Stresses beyond those listed under Absolute Maximum Ratings may cause permanent damage to the device. These are stress ratings
+    only, and functional operation of the device at these or any other conditions beyond those indicated under Section 8.3 is not implied.
+    Exposure to absolute-maximum-rated conditions for extended periods may affect device reliability. All voltage values are with respect
+    ---
+
+========== 第 12 页 ==========
+    Vhys Hysteresis on VIN(DT) VBAT = 3.6 V, VIN: 4 V → 3.5 V 20 mV
+    tDGL(PGOOD) Deglitch time, input power detected status Time measured from VIN: 0 V → 5 V 1 μs
+    rise-time to PGOOD = LO 1.2 ms
+    VOVP Input overvoltage protection threshold
+    VIN: 5 V → 7 V (’72, ’73, ’75, '79) 6.4 6.6 6.8
+    V
+    VIN: 5 V → 11 V (’74) 10.2 10.5 10.8
+    ---
+    tDGL(PGOOD) Deglitch time, input power detected status Time measured from VIN: 0 V → 5 V 1 μs
+    rise-time to PGOOD = LO 1.2 ms
+    VOVP Input overvoltage protection threshold
+    VIN: 5 V → 7 V (’72, ’73, ’75, '79) 6.4 6.6 6.8
+    V
+    VIN: 5 V → 11 V (’74) 10.2 10.5 10.8
+    Vhys Hysteresis on OVP
+    ---
+    tREC Input overvoltage recovery time Time measured from VIN: 11 V → 5 V with 1 μs
+    fall-time to PGOOD = LO 1.2 ms
+    ILIM, ISET SHORT-CIRCUIT DETECTION (CHECKED DURING STARTUP)
+    ISC Current source VIN > UVLO and VIN > VBAT + VIN(DT) 1.3 mA
+    VSC VIN > UVLO and VIN > VBAT + VIN(DT) 520 mV
+    QUIESCENT CURRENT
+    IBAT(PDWN) Sleep current into BAT pin CE = LO or HI, input power not detected,
+    ---
+
+========== 第 14 页 ==========
+    IIH Input source current VIH= 1.4 V 10 μA
+    LOGIC LEVELS ON PGOOD, CHG
+    VOL Output LOW voltage ISINK = 5 mA 0.4 V
+    (1) These numbers set trip points of 0degC and 50degC while charging, with 3degC hysteresis on the trip points, with a Vishay Type 2 curve NTC
+    with an R25 of 10 kΩ.
+    8.6 Typical Characteristics
+    VIN = 6 V, EN1=1, EN2=0, BQ24073 application circuit, TA = 25degC, unless otherwise noted.
+    ---
+
+========== 第 18 页 ==========
+    tDGL(NO-IN)
+    t DGL(PGOOD)
+    tBLK(OVP)
+    VBAT + VIN-DT
+    VUVLO
+    VOVP
+    VIN
+    ---
+    CHG
+    PGOOD
+    TS
+    TD
+    (BQ24072,
+    BQ24073)
+    OUT
+    ---
+
+========== 第 19 页 ==========
+    During the power down mode the host commands at the control inputs ( CE, EN1 and EN2) are ignored. The Q1
+    FET connected between IN and OUT pins is off, and the status outputs CHG and PGOOD are high impedance.
+    The Q2 FET that connects BAT to OUT is ON. (If SYSOFF is high, Q2 is off). During power down mode, the
+    VOUT(SC2) circuitry is active and monitors for overload conditions on OUT.
+    9.3.2 Power On
+    When V IN exceeds the UVLO threshold, the BQ2407x powers up. While V IN is below V BAT + V IN(DT), the host
+    commands at the control inputs ( CE, EN1 and EN2) are ignored. The Q1 FET connected between IN and OUT
+    ---
+    commands at the control inputs ( CE, EN1 and EN2) are ignored. The Q1 FET connected between IN and OUT
+    pins is off, and the status outputs CHG and PGOOD are high impedance. The Q2 FET that connects BAT to
+    OUT is ON. (If SYSOFF is high, Q2 is off). During this mode, the V OUT(SC2) circuitry is active and monitors for
+    overload conditions on OUT.
+    Once V IN rises above V BAT + V IN(DT), PGOOD is driven low to indicate the valid power status and the CE,
+    EN1, and EN2 inputs are read. The device enters standby mode if (EN1 = EN2 = HI) or if an input overvoltage
+    condition occurs. In standby mode, Q1 is OFF and Q2 is ON so OUT is connected to the battery input. (If
+    ---
+    overload conditions on OUT.
+    Once V IN rises above V BAT + V IN(DT), PGOOD is driven low to indicate the valid power status and the CE,
+    EN1, and EN2 inputs are read. The device enters standby mode if (EN1 = EN2 = HI) or if an input overvoltage
+    condition occurs. In standby mode, Q1 is OFF and Q2 is ON so OUT is connected to the battery input. (If
+    SYSOFF is high, FET Q2 is off). During this mode, the V OUT(SC2) circuitry is active and monitors for overload
+    conditions on OUT.
+    When the input voltage at IN is within the valid range: V IN > UVLO AND VIN > V BAT + V IN(DT) AND VIN < V OVP,
+    ---
+
+========== 第 20 页 ==========
+    PGOOD =□Low
+    UVLO<VIN<VOVP
+    and
+    VIN>VBAT+VIN(DT)
+    No
+    Yes
+    ---
+    Yes
+    PGOOD =□Hi-Z
+    CHG =□Hi-Z
+    BATTFET ON
+    Begin□Startup
+    IIN(MAX) 100 mA
+    VOUT short?
+    ---
+
+========== 第 21 页 ==========
+    implemented that shuts off the internal LDO and discontinues charging when V IN > V OVP for a period long than
+    tDGL(OVP). When in OVP, the system output (OUT) is connected to the battery and PGOOD is high impedance.
+    Once the OVP condition is removed, a new power on sequence starts (see Section 9.3.2). The safety timers are
+    reset and a new charge cycle will be indicated by the CHG output.
+    9.3.4 Dynamic Power Path Management
+    The BQ2407x features an OUT output that powers the external load connected to the battery. This output is
+    active whenever a source is connected to IN or BAT. The following sections discuss the behavior of OUT with a
+    ---
+
+========== 第 28 页 ==========
+    cleared by toggling CE or the input power, entering/ exiting USB suspend mode, or an OVP event.
+    9.3.5.7 Status Indicators ( PGOOD, CHG)
+    The BQ2407x contains two open-drain outputs that signal its status. The PGOOD output signals when a valid
+    input source is connected. PGOOD is low when (VBAT + VIN(DT)) < VIN < VOVP. When the input voltage is outside
+    of this range, PGOOD is high impedance.
+    The charge cycle after power-up, CE going low, or exiting OVP is indicated with the CHG pin on (low - LED on),
+    whereas all refresh (subsequent) charges will result in the CHG pin off (open - LED off). In addition, the CHG
+    ---
+    9.3.5.7 Status Indicators ( PGOOD, CHG)
+    The BQ2407x contains two open-drain outputs that signal its status. The PGOOD output signals when a valid
+    input source is connected. PGOOD is low when (VBAT + VIN(DT)) < VIN < VOVP. When the input voltage is outside
+    of this range, PGOOD is high impedance.
+    The charge cycle after power-up, CE going low, or exiting OVP is indicated with the CHG pin on (low - LED on),
+    whereas all refresh (subsequent) charges will result in the CHG pin off (open - LED off). In addition, the CHG
+    signals timer faults by flashing at approximately 2 Hz.
+    ---
+    The BQ2407x contains two open-drain outputs that signal its status. The PGOOD output signals when a valid
+    input source is connected. PGOOD is low when (VBAT + VIN(DT)) < VIN < VOVP. When the input voltage is outside
+    of this range, PGOOD is high impedance.
+    The charge cycle after power-up, CE going low, or exiting OVP is indicated with the CHG pin on (low - LED on),
+    whereas all refresh (subsequent) charges will result in the CHG pin off (open - LED off). In addition, the CHG
+    signals timer faults by flashing at approximately 2 Hz.
+    Table 9-1. PGOOD Status Indicator
+    ---
+    input source is connected. PGOOD is low when (VBAT + VIN(DT)) < VIN < VOVP. When the input voltage is outside
+    of this range, PGOOD is high impedance.
+    The charge cycle after power-up, CE going low, or exiting OVP is indicated with the CHG pin on (low - LED on),
+    whereas all refresh (subsequent) charges will result in the CHG pin off (open - LED off). In addition, the CHG
+    signals timer faults by flashing at approximately 2 Hz.
+    Table 9-1. PGOOD Status Indicator
+    INPUT STATE PGOOD OUTPUT
+    ---
+    signals timer faults by flashing at approximately 2 Hz.
+    Table 9-1. PGOOD Status Indicator
+    INPUT STATE PGOOD OUTPUT
+    VIN < VUVLO High-impedance
+    VUVLO < VIN < VBAT + VIN(DT) High-impedance
+    VBAT + VIN(DT) < VIN < VOVP Low
+    VIN > VOVP High-impedance
+    ---
+    Table 9-1. PGOOD Status Indicator
+    INPUT STATE PGOOD OUTPUT
+    VIN < VUVLO High-impedance
+    VUVLO < VIN < VBAT + VIN(DT) High-impedance
+    VBAT + VIN(DT) < VIN < VOVP Low
+    VIN > VOVP High-impedance
+    Table 9-2. CHG Status Indicator
+    ---
+
+========== 第 31 页 ==========
+    UVLO -□V hys(UVLO)
+    PGOOD
+    tDGL(PGOOD)
+    tDGL(OVP)
+    tDGL(PGOOD)
+    tDGL(NO-IN)
+    VIN
+    ---
+    PGOOD
+    tDGL(PGOOD)
+    tDGL(OVP)
+    tDGL(PGOOD)
+    tDGL(NO-IN)
+    VIN
+    t□<□tDGL(OVP)
+    ---
+    tDGL(OVP)
+    tDGL(PGOOD)
+    tDGL(NO-IN)
+    VIN
+    t□<□tDGL(OVP)
+    Typical□Input□Voltage
+    Operating□Range
+    ---
+    Operating□Range
+    Figure 9-10. Power-Up, Power-Down, Power Good Indication
+    VBAT
+    VLOWV
+    ICHG
+    IPRE-CHG
+    Pre-Charge
+    ---
+
+========== 第 33 页 ==========
+    ISET
+    PGOOD
+    CHG
+    TMR
+    ILM
+    R3
+    1.13 k/c87
+    ---
+
+========== 第 35 页 ==========
+    charging.
+    10.2.2.4 CHG and PGOOD
+    LED Status: Connect a 1.5-k Ω resistor in series with a LED between OUT and CHG to indicate charging status.
+    Connect a 1.5-kΩ resistor in series with a LED between OUT and PGOOD to indicate when a valid input source
+    is connected.
+    Processor Monitoring Status: Connect a pullup resistor (on the order of 100 k Ω) between the power rail of the
+    processor and CHG and PGOOD.
+    ---
+    LED Status: Connect a 1.5-k Ω resistor in series with a LED between OUT and CHG to indicate charging status.
+    Connect a 1.5-kΩ resistor in series with a LED between OUT and PGOOD to indicate when a valid input source
+    is connected.
+    Processor Monitoring Status: Connect a pullup resistor (on the order of 100 k Ω) between the power rail of the
+    processor and CHG and PGOOD.
+    10.2.2.5 Selecting IN, OUT, and BAT Pin Capacitors
+    In most applications, all that is needed is a high-frequency decoupling capacitor (ceramic) on the power pin,
+    ---
+    Processor Monitoring Status: Connect a pullup resistor (on the order of 100 k Ω) between the power rail of the
+    processor and CHG and PGOOD.
+    10.2.2.5 Selecting IN, OUT, and BAT Pin Capacitors
+    In most applications, all that is needed is a high-frequency decoupling capacitor (ceramic) on the power pin,
+    input, output and battery pins. Using the values shown on the application diagram, is recommended. After
+    evaluation of these voltage signals with real system operational conditions, one can determine if capacitance
+    values can be adjusted toward the minimum recommended values (DC load application) or higher values for
+    ---
+
+========== 第 36 页 ==========
+    IBAT
+    VPGOOD 5□V/div
+    V
+    4.4□V
+    OUT
+    V
+    3.6□V
+    ---
+
+========== 第 38 页 ==========
+    ISET
+    PGOOD
+    CHG
+    ITERM
+    ILM
+    R1
+    4.12 k/c87
+    ---
+    CE
+    PGOOD
+    OUT
+    SYSOFF
+    EN1
+    EN2
+    TS
+    ---

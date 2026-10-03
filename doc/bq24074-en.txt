@@ -1,0 +1,819 @@
+页数: 55
+
+========== 第 1 页 ==========
+--- p1 L81 ---
+    BQ24079
+    OUT
+    EN2
+    TS
+    TEMP PACK+
+    PACK-
+    SYSTEM
+    SYSOFF
+    System
+    ON/OFF
+--- p1 L109 ---
+    PGOOD
+    CHG
+    EN1
+    ILM
+    CE
+    TMR
+    ISET
+    Typical Application Circuit
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+
+========== 第 7 页 ==========
+--- p7 L1 ---
+    7 Pin Configuration and Functions
+    16 ISET5EN2
+    1TS 12  ILIM
+    15 TD6EN1
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+--- p7 L3 ---
+    16 ISET5EN2
+    1TS 12  ILIM
+    15 TD6EN1
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+    Not to scale
+    Thermal
+--- p7 L13 ---
+    Pad
+    Figure 7-1. BQ24072, BQ24073 RGT0016B Package 16 Pins Top View
+    16 ISET5EN2
+    1TS 12  ILIM
+    15 ITERM6EN1
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+--- p7 L15 ---
+    16 ISET5EN2
+    1TS 12  ILIM
+    15 ITERM6EN1
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+    Not to scale
+    Thermal
+
+========== 第 8 页 ==========
+--- p8 L0 ---
+    16 ISET5EN2
+    1TS 12  ILIM
+    15 SYSOFF6EN1
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+--- p8 L2 ---
+    16 ISET5EN2
+    1TS 12  ILIM
+    15 SYSOFF6EN1
+    2BAT 11  OUT
+    14 TMR7PGOOD
+    3BAT 10  OUT
+    13 IN8VSS
+    4CE 9  CHG
+    Not to scale
+    Thermal
+--- p8 L27 ---
+    impedance when charging is complete and when charger is disabled. Connect CHG to the desired logic
+    voltage rail using a 1kΩ-100kΩ resistor, or use with an LED for visual indication.
+    EN1 6 6 6 I Input Current Limit Configuration Inputs. Use EN1 and EN2 control the maximum input current and enable
+    USB compliance. See Table 7-2 for the description of the operation states. EN1 and EN2 are internally pulled
+    down with ≉285 kΩ. Do not leave EN1 or EN2 unconnected to ensure proper operation.EN2 5 5 5 I
+    ILIM 12 12 12 I
+    Adjustable Current Limit Programming Input. Connect a 1100-Ω to 8-kΩ resistor from ILIM to VSS to program
+    the maximum input current (EN2=1, EN1=0). The input current includes the system load and the battery
+    charge current. Leaving ILIM unconnected disables all charging.
+    IN 13 13 13 I
+--- p8 L28 ---
+    voltage rail using a 1kΩ-100kΩ resistor, or use with an LED for visual indication.
+    EN1 6 6 6 I Input Current Limit Configuration Inputs. Use EN1 and EN2 control the maximum input current and enable
+    USB compliance. See Table 7-2 for the description of the operation states. EN1 and EN2 are internally pulled
+    down with ≉285 kΩ. Do not leave EN1 or EN2 unconnected to ensure proper operation.EN2 5 5 5 I
+    ILIM 12 12 12 I
+    Adjustable Current Limit Programming Input. Connect a 1100-Ω to 8-kΩ resistor from ILIM to VSS to program
+    the maximum input current (EN2=1, EN1=0). The input current includes the system load and the battery
+    charge current. Leaving ILIM unconnected disables all charging.
+    IN 13 13 13 I
+    Input Power Connection. Connect IN to the external DC supply (AC adapter or USB port). The input operating
+--- p8 L29 ---
+    EN1 6 6 6 I Input Current Limit Configuration Inputs. Use EN1 and EN2 control the maximum input current and enable
+    USB compliance. See Table 7-2 for the description of the operation states. EN1 and EN2 are internally pulled
+    down with ≉285 kΩ. Do not leave EN1 or EN2 unconnected to ensure proper operation.EN2 5 5 5 I
+    ILIM 12 12 12 I
+    Adjustable Current Limit Programming Input. Connect a 1100-Ω to 8-kΩ resistor from ILIM to VSS to program
+    the maximum input current (EN2=1, EN1=0). The input current includes the system load and the battery
+    charge current. Leaving ILIM unconnected disables all charging.
+    IN 13 13 13 I
+    Input Power Connection. Connect IN to the external DC supply (AC adapter or USB port). The input operating
+    range is 4.35 V to 6.6 V (BQ24072, BQ24073, BQ24075, and BQ24079) or 4.35 V to 10.5 V (bq24074). The
+--- p8 L32 ---
+    ILIM 12 12 12 I
+    Adjustable Current Limit Programming Input. Connect a 1100-Ω to 8-kΩ resistor from ILIM to VSS to program
+    the maximum input current (EN2=1, EN1=0). The input current includes the system load and the battery
+    charge current. Leaving ILIM unconnected disables all charging.
+    IN 13 13 13 I
+    Input Power Connection. Connect IN to the external DC supply (AC adapter or USB port). The input operating
+    range is 4.35 V to 6.6 V (BQ24072, BQ24073, BQ24075, and BQ24079) or 4.35 V to 10.5 V (bq24074). The
+    input can accept voltages up to 26 V without damage but operation is suspended. Connect bypass capacitor
+    1 μF to 10 μF to VSS.
+    ISET 16 16 16 I/O
+
+========== 第 9 页 ==========
+--- p9 L24 ---
+    to VSS to maintain a valid voltage level on TS.
+    VSS 8 8 8 - Ground. Connect to the thermal pad and to the ground rail of the circuit.
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    0 1 500 mA. USB500 mode
+    1 0 Set by an external resistor from ILIM to VSS
+    1 1 Standby (USB suspend mode)
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+--- p9 L25 ---
+    VSS 8 8 8 - Ground. Connect to the thermal pad and to the ground rail of the circuit.
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    0 1 500 mA. USB500 mode
+    1 0 Set by an external resistor from ILIM to VSS
+    1 1 Standby (USB suspend mode)
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+--- p9 L26 ---
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    0 1 500 mA. USB500 mode
+    1 0 Set by an external resistor from ILIM to VSS
+    1 1 Standby (USB suspend mode)
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 9
+--- p9 L27 ---
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    0 1 500 mA. USB500 mode
+    1 0 Set by an external resistor from ILIM to VSS
+    1 1 Standby (USB suspend mode)
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 9
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+
+========== 第 10 页 ==========
+--- p10 L7 ---
+    IN (with respect to VSS) -0.3 28 V
+    BAT (with respect to VSS) -0.3 5 V
+    OUT, EN1, EN2, CE, TS, ISET, PGOOD, CHG, ILIM,
+    TMR, ITERM, SYSOFF, TD (with respect to VSS) -0.3 7 V
+    II Input Current IN 1.6 A
+    IO
+    Output Current
+    (Continuous)
+    OUT 5 A
+    BAT (Discharge mode) 5 A
+
+========== 第 12 页 ==========
+--- p12 L29 ---
+    No load on OUT pin, TJ = 85°C 4.3 6.5 μA
+    IIN Standby current into IN pin
+    EN1= HI, EN2=HI, VIN = 6 V, TJ= 85°C 41.3 50
+    μA
+    EN1= HI, EN2=HI, VIN = 10 V, TJ= 85°C 99.8 200
+    ICC Active supply current, IN pin CE = LO, VIN = 6 V, no load on OUT pin,
+    VBAT > VBAT(REG), (EN1, EN2) ≠ (HI, HI) 1.1 1.5 mA
+    POWER PATH
+    VDO(IN-OUT) VIN - VOUT VIN = 4.3 V, IIN = 1 A, VBAT = 4.2 V 300 475 mV
+    VDO(BAT-OUT) VBAT - VOUT IOUT = 1 A, VIN = 0 V, VBAT > 3 V 50 100 mV
+--- p12 L31 ---
+    EN1= HI, EN2=HI, VIN = 6 V, TJ= 85°C 41.3 50
+    μA
+    EN1= HI, EN2=HI, VIN = 10 V, TJ= 85°C 99.8 200
+    ICC Active supply current, IN pin CE = LO, VIN = 6 V, no load on OUT pin,
+    VBAT > VBAT(REG), (EN1, EN2) ≠ (HI, HI) 1.1 1.5 mA
+    POWER PATH
+    VDO(IN-OUT) VIN - VOUT VIN = 4.3 V, IIN = 1 A, VBAT = 4.2 V 300 475 mV
+    VDO(BAT-OUT) VBAT - VOUT IOUT = 1 A, VIN = 0 V, VBAT > 3 V 50 100 mV
+    VO(REG)
+    OUT pin voltage regulation (BQ24072)
+--- p12 L33 ---
+    EN1= HI, EN2=HI, VIN = 10 V, TJ= 85°C 99.8 200
+    ICC Active supply current, IN pin CE = LO, VIN = 6 V, no load on OUT pin,
+    VBAT > VBAT(REG), (EN1, EN2) ≠ (HI, HI) 1.1 1.5 mA
+    POWER PATH
+    VDO(IN-OUT) VIN - VOUT VIN = 4.3 V, IIN = 1 A, VBAT = 4.2 V 300 475 mV
+    VDO(BAT-OUT) VBAT - VOUT IOUT = 1 A, VIN = 0 V, VBAT > 3 V 50 100 mV
+    VO(REG)
+    OUT pin voltage regulation (BQ24072)
+    VIN > VOUT + VDO(IN-OUT), VBAT < 3.2 V 3.3 3.4 3.5
+    V
+--- p12 L50 ---
+    OUT pin voltage regulation (BQ24075, BQ24079) VIN > VOUT + VDO(IN-OUT) 5.4 5.5 5.6
+    IINmax Maximum input current
+    EN1 = LO, EN2 = LO 90 95 100
+    mA
+    EN1 = HI, EN2 = LO 450 475 500
+    EN2 = HI, EN1 = LO KILIM/RILIM A
+    KILIM Maximum input current factor
+    ILIM = 500 mA to 1.5 A 1500 1610 1720
+    AΩ
+    ILIM = 200 mA to 500 mA 1330 1525 1720
+--- p12 L52 ---
+    EN1 = LO, EN2 = LO 90 95 100
+    mA
+    EN1 = HI, EN2 = LO 450 475 500
+    EN2 = HI, EN1 = LO KILIM/RILIM A
+    KILIM Maximum input current factor
+    ILIM = 500 mA to 1.5 A 1500 1610 1720
+    AΩ
+    ILIM = 200 mA to 500 mA 1330 1525 1720
+    IINmax Programmable input current limit range EN2 = HI, EN1 = LO, RILIM = 8 kΩ to 1.1 kΩ 200 1500 mA
+    VIN-DPM Input voltage threshold when input current is reduced EN2 = LO, EN1 = X 4.35 4.5 4.63 V
+--- p12 L53 ---
+    mA
+    EN1 = HI, EN2 = LO 450 475 500
+    EN2 = HI, EN1 = LO KILIM/RILIM A
+    KILIM Maximum input current factor
+    ILIM = 500 mA to 1.5 A 1500 1610 1720
+    AΩ
+    ILIM = 200 mA to 500 mA 1330 1525 1720
+    IINmax Programmable input current limit range EN2 = HI, EN1 = LO, RILIM = 8 kΩ to 1.1 kΩ 200 1500 mA
+    VIN-DPM Input voltage threshold when input current is reduced EN2 = LO, EN1 = X 4.35 4.5 4.63 V
+    VDPPM
+--- p12 L58 ---
+    AΩ
+    ILIM = 200 mA to 500 mA 1330 1525 1720
+    IINmax Programmable input current limit range EN2 = HI, EN1 = LO, RILIM = 8 kΩ to 1.1 kΩ 200 1500 mA
+    VIN-DPM Input voltage threshold when input current is reduced EN2 = LO, EN1 = X 4.35 4.5 4.63 V
+    VDPPM
+    Output voltage threshold when charging current is
+    reduced
+    (’72, ’73, ’74) VO(REG) -
+    180mV
+    VO(REG) -
+--- p12 L59 ---
+    ILIM = 200 mA to 500 mA 1330 1525 1720
+    IINmax Programmable input current limit range EN2 = HI, EN1 = LO, RILIM = 8 kΩ to 1.1 kΩ 200 1500 mA
+    VIN-DPM Input voltage threshold when input current is reduced EN2 = LO, EN1 = X 4.35 4.5 4.63 V
+    VDPPM
+    Output voltage threshold when charging current is
+    reduced
+    (’72, ’73, ’74) VO(REG) -
+    180mV
+    VO(REG) -
+    100mV
+
+========== 第 13 页 ==========
+--- p13 L15 ---
+    ICHG
+    Battery fast charge current range VBAT(REG) > VBAT > VLOWV, VIN = 5 V CE = LO,
+    EN1 = LO, EN2 = HI 100 1500 mA
+    Battery fast charge current
+    CE = LO, EN1= LO, EN2 = HI,
+    VBAT > VLOWV, VIN = 5 V, IINmax > ICHG, no load on OUT pin,
+    thermal loop and DPPM loop not active
+    KISET/RISET A
+    KISET Fast charge current factor 797 890 975 AΩ
+    IPRECHG Pre-charge current KPRECHG/RISET A
+--- p13 L17 ---
+    EN1 = LO, EN2 = HI 100 1500 mA
+    Battery fast charge current
+    CE = LO, EN1= LO, EN2 = HI,
+    VBAT > VLOWV, VIN = 5 V, IINmax > ICHG, no load on OUT pin,
+    thermal loop and DPPM loop not active
+    KISET/RISET A
+    KISET Fast charge current factor 797 890 975 AΩ
+    IPRECHG Pre-charge current KPRECHG/RISET A
+    KPRECHG Pre-charge current factor 70 88 106 AΩ
+    ITERM
+--- p13 L27 ---
+    Termination comparator detection threshold
+    (internally set)
+    CE = LO, (EN1, EN2) ≠ (LO, LO),
+    VBAT > VRCH, t < tMAXCH, VIN = 5 V, DPPM loop and thermal
+    loop not active
+    0.09×ICHG 0.1×ICHG 0.11×ICHG
+    A
+    CE = LO, (EN1, EN2) = (LO, LO),
+    VBAT > VRCH, t < tMAXCH, VIN = 5 V, DPPM loop and thermal
+    loop not active
+--- p13 L32 ---
+    0.09×ICHG 0.1×ICHG 0.11×ICHG
+    A
+    CE = LO, (EN1, EN2) = (LO, LO),
+    VBAT > VRCH, t < tMAXCH, VIN = 5 V, DPPM loop and thermal
+    loop not active
+    0.027×ICHG 0.033×ICHG 0.040×ICHG
+    IBIAS(ITERM) Current for external termination-setting resistor VIN > VUVLO and VIN > VBAT + VIN(DT) 72 75 78 μA
+    ITERM
+    Termination current threshold (externally set)
+    (BQ24074) KITERM × RITERM / RISET A
+--- p13 L43 ---
+    K Factor for termination detection threshold
+    (externally set) (BQ24074)
+    USB500 or ISET mode(EN1, EN2) ≠ (LO, LO)
+    CE = LO, VBAT > VRCH, t < tMAXCH, VIN = 5 V, DPPM loop and
+    thermal loop not active
+    0.0225 0.0300 0.0375
+    A
+    USB100 mode (EN1, EN2) = (LO, LO),
+    CE = LO, VBAT > VRCH, t < tMAXCH, VIN = 5 V, DPPM loop and
+    thermal loop not active
+--- p13 L48 ---
+    0.0225 0.0300 0.0375
+    A
+    USB100 mode (EN1, EN2) = (LO, LO),
+    CE = LO, VBAT > VRCH, t < tMAXCH, VIN = 5 V, DPPM loop and
+    thermal loop not active
+    0.008 0.0100 0.012
+    tDGL(TERM) Deglitch time, termination detected 25 ms
+    VRCH Recharge detection threshold VIN > VUVLO and VIN > VBAT + VIN(DT)
+    VBAT(REG) -
+    140mV
+
+========== 第 14 页 ==========
+--- p14 L3 ---
+    Over junction temperature range (0° ≤ TJ ≤ 125°C) and the recommended supply voltage range (unless otherwise noted)
+    PARAMETER TEST CONDITIONS MIN TYP MAX UNIT
+    LOGIC LEVELS ON EN1, EN2, CE, SYSOFF, TD
+    VIL Logic LOW input voltage 0 0.4 V
+    VIH Logic HIGH input voltage 1.4 6 V
+    IIL Input sink current VIL= 0 V 1 μA
+    IIH Input source current VIH= 1.4 V 10 μA
+    LOGIC LEVELS ON PGOOD, CHG
+    VOL Output LOW voltage ISINK = 5 mA 0.4 V
+    (1) These numbers set trip points of 0°C and 50°C while charging, with 3°C hysteresis on the trip points, with a Vishay Type 2 curve NTC
+--- p14 L13 ---
+    with an R25 of 10 kΩ.
+    8.6 Typical Characteristics
+    VIN = 6 V, EN1=1, EN2=0, BQ24073 application circuit, TA = 25°C, unless otherwise noted.
+    600
+    400
+    100
+    Temperature□- C
+    o
+    300
+    200
+
+========== 第 15 页 ==========
+--- p15 L1 ---
+    8.6 Typical Characteristics (continued)
+    VIN = 6 V, EN1=1, EN2=0, BQ24073 application circuit, TA = 25°C, unless otherwise noted.
+    3.60
+    3.62
+    3.64
+    3.66
+    3.68
+    3.70
+    3.72
+
+========== 第 16 页 ==========
+--- p16 L1 ---
+    8.6 Typical Characteristics (continued)
+    VIN = 6 V, EN1=1, EN2=0, BQ24073 application circuit, TA = 25°C, unless otherwise noted.
+    0
+    100
+    200
+    300
+    400
+    500
+    600
+--- p16 L15 ---
+    I -□Input□Current□-□mALIM
+    RILIM
+    USB500
+    USB100
+    Figure 8-11. BQ24074 Input Current Limit vs Input Voltage
+    R□□□□□□□=□900ISET /c87
+    0.95
+    0.97
+    0.99
+    1.01
+--- p16 L16 ---
+    RILIM
+    USB500
+    USB100
+    Figure 8-11. BQ24074 Input Current Limit vs Input Voltage
+    R□□□□□□□=□900ISET /c87
+    0.95
+    0.97
+    0.99
+    1.01
+    1.03
+
+========== 第 18 页 ==========
+--- p18 L1 ---
+    9.2 Functional Block Diagram
+    USB100
+    USB500
+    VREF-ILIMUSB-susp
+    Short Detect
+    Short DetectTJ(REG)
+    TJ
+    VDPPM
+    VOUT
+--- p18 L2 ---
+    9.2 Functional Block Diagram
+    USB100
+    USB500
+    VREF-ILIMUSB-susp
+    Short Detect
+    Short DetectTJ(REG)
+    TJ
+    VDPPM
+    VOUT
+    VBAT(REG )
+--- p18 L43 ---
+    Halt timers
+    Timer fault
+    EN1
+    EN2
+    USB Suspend
+    EN2
+    CE
+    IN
+    EN1
+    EN2
+--- p18 L44 ---
+    Timer fault
+    EN1
+    EN2
+    USB Suspend
+    EN2
+    CE
+    IN
+    EN1
+    EN2
+    CHG
+--- p18 L46 ---
+    EN2
+    USB Suspend
+    EN2
+    CE
+    IN
+    EN1
+    EN2
+    CHG
+    PGOOD
+    TS
+--- p18 L49 ---
+    CE
+    IN
+    EN1
+    EN2
+    CHG
+    PGOOD
+    TS
+    TD
+    (BQ24072,
+    BQ24073)
+--- p18 L50 ---
+    IN
+    EN1
+    EN2
+    CHG
+    PGOOD
+    TS
+    TD
+    (BQ24072,
+    BQ24073)
+    OUT
+
+========== 第 19 页 ==========
+--- p19 L4 ---
+    The BQ2407X family remains in power down mode when the input voltage at the IN pin is below the
+    undervoltage threshold (UVLO).
+    During the power down mode the host commands at the control inputs ( CE, EN1 and EN2) are ignored. The Q1
+    FET connected between IN and OUT pins is off, and the status outputs CHG and PGOOD are high impedance.
+    The Q2 FET that connects BAT to OUT is ON. (If SYSOFF is high, Q2 is off). During power down mode, the
+    VOUT(SC2) circuitry is active and monitors for overload conditions on OUT.
+    9.3.2 Power On
+    When V IN exceeds the UVLO threshold, the BQ2407x powers up. While V IN is below V BAT + V IN(DT), the host
+    commands at the control inputs ( CE, EN1 and EN2) are ignored. The Q1 FET connected between IN and OUT
+    pins is off, and the status outputs CHG and PGOOD are high impedance. The Q2 FET that connects BAT to
+--- p19 L10 ---
+    9.3.2 Power On
+    When V IN exceeds the UVLO threshold, the BQ2407x powers up. While V IN is below V BAT + V IN(DT), the host
+    commands at the control inputs ( CE, EN1 and EN2) are ignored. The Q1 FET connected between IN and OUT
+    pins is off, and the status outputs CHG and PGOOD are high impedance. The Q2 FET that connects BAT to
+    OUT is ON. (If SYSOFF is high, Q2 is off). During this mode, the V OUT(SC2) circuitry is active and monitors for
+    overload conditions on OUT.
+    Once V IN rises above V BAT + V IN(DT), PGOOD is driven low to indicate the valid power status and the CE,
+    EN1, and EN2 inputs are read. The device enters standby mode if (EN1 = EN2 = HI) or if an input overvoltage
+    condition occurs. In standby mode, Q1 is OFF and Q2 is ON so OUT is connected to the battery input. (If
+    SYSOFF is high, FET Q2 is off). During this mode, the V OUT(SC2) circuitry is active and monitors for overload
+--- p19 L15 ---
+    overload conditions on OUT.
+    Once V IN rises above V BAT + V IN(DT), PGOOD is driven low to indicate the valid power status and the CE,
+    EN1, and EN2 inputs are read. The device enters standby mode if (EN1 = EN2 = HI) or if an input overvoltage
+    condition occurs. In standby mode, Q1 is OFF and Q2 is ON so OUT is connected to the battery input. (If
+    SYSOFF is high, FET Q2 is off). During this mode, the V OUT(SC2) circuitry is active and monitors for overload
+    conditions on OUT.
+    When the input voltage at IN is within the valid range: V IN > UVLO AND VIN > V BAT + V IN(DT) AND VIN < V OVP,
+    and the EN1 and EN2 pins indicate that the USB suspend mode is not enabled [(EN1, EN2) ≠ (HI, HI)] all
+    internal timers and other circuit blocks are activated. The device then checks for short-circuits at the ISET and
+    ILIM pins. If no short conditions exists, the device switches on the input FET Q1 with a 100mA current limit to
+--- p19 L20 ---
+    conditions on OUT.
+    When the input voltage at IN is within the valid range: V IN > UVLO AND VIN > V BAT + V IN(DT) AND VIN < V OVP,
+    and the EN1 and EN2 pins indicate that the USB suspend mode is not enabled [(EN1, EN2) ≠ (HI, HI)] all
+    internal timers and other circuit blocks are activated. The device then checks for short-circuits at the ISET and
+    ILIM pins. If no short conditions exists, the device switches on the input FET Q1 with a 100mA current limit to
+    checks for a short circuit at OUT. When VOUT is above VO(SC1), the FET Q1 switches to the current limit threshold
+    set by EN1, EN2 and RILIM and the device enters into the normal operation. During normal operation, the system
+    is powered by the input source (Q1 is regulating), and the device continuously monitors the status of CE, EN1
+    and EN2 as well as the input voltage conditions.
+    www.ti.com
+--- p19 L24 ---
+    ILIM pins. If no short conditions exists, the device switches on the input FET Q1 with a 100mA current limit to
+    checks for a short circuit at OUT. When VOUT is above VO(SC1), the FET Q1 switches to the current limit threshold
+    set by EN1, EN2 and RILIM and the device enters into the normal operation. During normal operation, the system
+    is powered by the input source (Q1 is regulating), and the device continuously monitors the status of CE, EN1
+    and EN2 as well as the input voltage conditions.
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 19
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+--- p19 L25 ---
+    checks for a short circuit at OUT. When VOUT is above VO(SC1), the FET Q1 switches to the current limit threshold
+    set by EN1, EN2 and RILIM and the device enters into the normal operation. During normal operation, the system
+    is powered by the input source (Q1 is regulating), and the device continuously monitors the status of CE, EN1
+    and EN2 as well as the input voltage conditions.
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 19
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+--- p19 L26 ---
+    set by EN1, EN2 and RILIM and the device enters into the normal operation. During normal operation, the system
+    is powered by the input source (Q1 is regulating), and the device continuously monitors the status of CE, EN1
+    and EN2 as well as the input voltage conditions.
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 19
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+
+========== 第 20 页 ==========
+--- p20 L6 ---
+    No
+    Yes
+    EN1=EN2=1
+    Yes
+    No
+    ILIM□or□ISET short?
+    Yes
+    PGOOD =□Hi-Z
+    CHG =□Hi-Z
+    BATTFET ON
+--- p20 L21 ---
+    No
+    Input□Current
+    Limit□set□by□EN1
+    and□EN2
+    CE =□Low
+    No
+    Begin□Charging
+    Yes
+    Figure 9-1. Startup Flow Diagram
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+--- p20 L22 ---
+    Input□Current
+    Limit□set□by□EN1
+    and□EN2
+    CE =□Low
+    No
+    Begin□Charging
+    Yes
+    Figure 9-1. Startup Flow Diagram
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021 www.ti.com
+
+========== 第 21 页 ==========
+--- p21 L16 ---
+    V, OUT is clamped to 3.4 V. This allows for proper startup of the system load even with a discharged battery. The
+    current into IN is shared between charging the battery and powering the system load at OUT. The BQ2407x has
+    internal selectable current limits of 100 mA (USB100) and 500 mA (USB500) for charging from USB ports, as
+    well as a resistor-programmable input current limit.
+    The BQ2407x is USB IF compliant for the inrush current testing. The USB specification allows up to 10 μF to be
+    hard started, which establishes 50 μC as the maximum inrush charge value when exceeding 100 mA. The input
+    current limit for the BQ2407x prevents the input current from exceeding this limit, even with system capacitances
+    greater than 10 μF. The input capacitance to the device must be selected small enough to prevent a violation
+    (<10 μF), as this current is not limited. Figure 9-2 demonstrates the start-up of the BQ2407x and compares it to
+    the USB-IF specification.
+--- p21 L27 ---
+    100 μs/div
+    20□mA/div
+    USB100□Current□Limit
+    Figure 9-2. USB-IF Inrush Current Test
+    The input current limit selection is controlled by the state of the EN1 and EN2 pins as shown in the EN1/EN2
+    Settings table in Section 7. When using the resistor-programmable current limit, the input current limit is set by
+    the value of the resistor connected from the ILIM pin to VSS, and is given by the equation:
+    IIN-MAX = KILIM/RILIM (1)
+    The input current limit is adjustable up to 1.5 A. The valid resistor range is 1.1 kΩ to 8 kΩ.
+    www.ti.com
+--- p21 L29 ---
+    USB100□Current□Limit
+    Figure 9-2. USB-IF Inrush Current Test
+    The input current limit selection is controlled by the state of the EN1 and EN2 pins as shown in the EN1/EN2
+    Settings table in Section 7. When using the resistor-programmable current limit, the input current limit is set by
+    the value of the resistor connected from the ILIM pin to VSS, and is given by the equation:
+    IIN-MAX = KILIM/RILIM (1)
+    The input current limit is adjustable up to 1.5 A. The valid resistor range is 1.1 kΩ to 8 kΩ.
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+
+========== 第 22 页 ==========
+--- p22 L4 ---
+    supplement modes. These modes are explained in detail in the following sections.
+    9.3.4.1.1 Input DPM Mode (VIN-DPM)
+    The BQ2407x utilizes the V IN-DPM mode for operation from current-limited USB ports. When EN1 and EN2 are
+    configured for USB100 (EN2=0, EN1=0) or USB500 (EN2=0, EN1=1) modes, the input voltage is monitored.
+    If V IN falls to V IN-DPM, the input current limit is reduced to prevent the input voltage from falling further. This
+    prevents the BQ2407x from crashing poorly designed or incorrectly configured USB sources. Figure 9-3 shows
+    the VIN-DPM behavior to a current limited source. In this figure, the input source has a 400-mA current limit and
+    the device is in USB500 mode (EN1=1, EN2=0).
+    4□ms/div
+    500mV/div
+--- p22 L5 ---
+    9.3.4.1.1 Input DPM Mode (VIN-DPM)
+    The BQ2407x utilizes the V IN-DPM mode for operation from current-limited USB ports. When EN1 and EN2 are
+    configured for USB100 (EN2=0, EN1=0) or USB500 (EN2=0, EN1=1) modes, the input voltage is monitored.
+    If V IN falls to V IN-DPM, the input current limit is reduced to prevent the input voltage from falling further. This
+    prevents the BQ2407x from crashing poorly designed or incorrectly configured USB sources. Figure 9-3 shows
+    the VIN-DPM behavior to a current limited source. In this figure, the input source has a 400-mA current limit and
+    the device is in USB500 mode (EN1=1, EN2=0).
+    4□ms/div
+    500mV/div
+    USB5 Current□Limit00
+--- p22 L9 ---
+    prevents the BQ2407x from crashing poorly designed or incorrectly configured USB sources. Figure 9-3 shows
+    the VIN-DPM behavior to a current limited source. In this figure, the input source has a 400-mA current limit and
+    the device is in USB500 mode (EN1=1, EN2=0).
+    4□ms/div
+    500mV/div
+    USB5 Current□Limit00
+    200mA/div
+    200mA/div
+    200mA/div
+    IOUT
+--- p22 L29 ---
+    9.3.4.1.2 DPPM Mode
+    When the sum of the charging and system load currents exceeds the maximum input current (programmed with
+    EN1, EN2, and ILIM pins), the voltage at OUT decreases. Once the voltage on the OUT pin falls to V DPPM, the
+    BQ2407x enters DPPM mode. In this mode, the charging current is reduced as the OUT current increases in
+    order to maintain the system output. Battery termination is disabled while in DPPM mode.
+    9.3.4.1.3 Battery Supplement Mode
+    While in DPPM mode, if the charging current falls to zero and the system load current increases beyond the
+    programmed input current limit, the voltage at OUT reduces further. When the OUT voltage drops below the
+    VBSUP1 threshold, the battery supplements the system load. The battery stops supplementing the system load
+    when the voltage at OUT rises above the VBSUP2 threshold.
+
+========== 第 27 页 ==========
+--- p27 L2 ---
+    9.3.5.2 Adjustable Termination Threshold (ITERM Input, BQ24074)
+    The termination current threshold in the BQ24074 is user-programmable. Set the termination current by
+    connecting a resistor from ITERM to VSS. For USB100 mode (EN1 = EN2 = Low), the termination current
+    value is calculated as:
+    ITERM = 0.01 × RITERM/ RISET (4)
+    In the other input current limit modes (EN1 ≠ EN2), the termination current value is calculated as:
+    ITERM = 0.03 × RITERM/ RISET (5)
+    The termination current is programmable up to 50% of the fastcharge current. The R ITERM resistor must be less
+    than 15 kΩ. Leave ITERM unconnected to select the default internally set termination current.
+    9.3.5.3 Termination Disable (TD Input, BQ24072, BQ24073)
+--- p27 L5 ---
+    value is calculated as:
+    ITERM = 0.01 × RITERM/ RISET (4)
+    In the other input current limit modes (EN1 ≠ EN2), the termination current value is calculated as:
+    ITERM = 0.03 × RITERM/ RISET (5)
+    The termination current is programmable up to 50% of the fastcharge current. The R ITERM resistor must be less
+    than 15 kΩ. Leave ITERM unconnected to select the default internally set termination current.
+    9.3.5.3 Termination Disable (TD Input, BQ24072, BQ24073)
+    The BQ24072 and BQ24073 contain a TD input that allows termination to be enabled/ disabled. Connect TD to a
+    logic high to disable charge termination. When termination is disabled, the device goes through the pre-charge,
+    fast-charge and CV phases, then remains in the CV phase. During the CV phase, the charger maintains the
+--- p27 L41 ---
+    tMAXCHG = 10 × KTMR × RTMR (7)
+    Leave TMR unconnected to select the internal default timers. Disable the timers by connecting TMR to VSS.
+    Reset the timers by toggling the CE pin, or by toggling EN1, EN2 pin to put the device in and out of USB
+    suspend mode (EN1 = HI, EN2 = HI).
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 27
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+--- p27 L42 ---
+    Leave TMR unconnected to select the internal default timers. Disable the timers by connecting TMR to VSS.
+    Reset the timers by toggling the CE pin, or by toggling EN1, EN2 pin to put the device in and out of USB
+    suspend mode (EN1 = HI, EN2 = HI).
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 27
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+
+========== 第 33 页 ==========
+--- p33 L32 ---
+    OUT
+    TD
+    EN1
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK-
+    SYSTEM
+    ISET
+--- p33 L33 ---
+    TD
+    EN1
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK-
+    SYSTEM
+    ISET
+    PGOOD
+
+========== 第 34 页 ==========
+--- p34 L33 ---
+    RITERM = 110 mA × 1.13 kΩ / 0.030 = 4.143 kΩ
+    Select the closest standard value, which for this case is 4.12 k Ω. Connect this resistor between ITERM (pin 15)
+    and VSS. Note that when in USB100 mode (EN1 = EN2 = V SS), the termination threshold is 1/3 of the normal
+    threshold.
+    10.2.2.2.4 Program 6.25-hour Fast-Charge Safety Timer (TMR)
+    RTMR = tMAXCHG / (10 × KTMR )
+    KTMR = 48 s/kΩ from the electrical characteristics table.
+    RTMR = (6.25 hr × 3600 s/hr) / (10 × 48 s/kΩ) = 46.8 kΩ
+    Select the closest standard value, which for this case is 46.4 k Ω. Connect this resistor between TMR (pin 14)
+    and VSS.
+
+========== 第 38 页 ==========
+--- p38 L14 ---
+    OUT
+    TMR
+    EN1
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK-
+    C1
+    1 F/c109
+--- p38 L15 ---
+    TMR
+    EN1
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK-
+    C1
+    1 F/c109
+    C3
+--- p38 L62 ---
+    OUT
+    SYSOFF
+    EN1
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK- R3
+    1.13 k/c87
+    R4
+--- p38 L63 ---
+    SYSOFF
+    EN1
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK- R3
+    1.13 k/c87
+    R4
+    1.5 k/c87
