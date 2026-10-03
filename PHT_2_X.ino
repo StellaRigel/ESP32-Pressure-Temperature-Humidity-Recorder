@@ -1634,11 +1634,16 @@ void servicePr1Interlock(const PowerState& p) {
 }
 
 void applyChargeStrategy(const PowerState& ps) {
-#if PWR_SAFE_START && !usbAllowCharge
-  // ★【阶段1】安全启动模式：**绝不使能充电**（CE 恒高）。
-  //   本阶段只验证"禁充 + USB500 能否让系统稳定启动"，充电策略暂不参与。
-  digitalWrite(PIN_CE, HIGH);
-  return;
+#if PWR_SAFE_START
+  // ★ 安全启动模式下，**充电使能由 usbAllowCharge 决定**（运行期变量）。
+  //   ⛔ 这里**必须用运行期 if，不能用 #if** ——
+  //      #if 是编译期求值，会把运行期变量当成 0，导致条件恒真、
+  //      永远走"禁充 + return"，把 serviceUsbEnum() 拉低的 CE 又拉回去。
+  //      （2026-10-03 实测踩到：插充电器时 allowCharge=true 但 chgEnabled=false）
+  if (!usbAllowCharge) {
+    digitalWrite(PIN_CE, HIGH);      // 未获准充电 → 锁死禁充
+    return;
+  }
 #endif
   // 1) 电流档位随模式切换（仅在变化时打印，避免日志刷屏）
   //    V2.1.1-a：移动默认快充；移动+插电时按 IO9 可临时切慢充（chargeForceSlow，拔插即失效）
