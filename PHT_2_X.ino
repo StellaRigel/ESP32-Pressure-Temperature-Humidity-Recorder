@@ -432,7 +432,8 @@ bool wifiRemove(const char* ssid) {
 }
 
 // 扫描 → 在已保存的组里挑信号最强的写进 wifiCfg；返回是否挑到
-bool wifiPickBest() {
+//   requireInRange=true：**扫不到就返回 false，绝不硬连**（用于启动期，避免白等 10 秒）
+bool wifiPickBest(bool requireInRange) {
   if (wifiCount == 0) return false;
   int n = WiFi.scanNetworks();
   int best = -1, bestR = -127;
@@ -445,6 +446,9 @@ bool wifiPickBest() {
   WiFi.scanDelete();
   if (best < 0) {
     if (wifiCount == 1) { wifiCfg = wifiList[0]; wifiRssi = 0; return true; }
+    // ⚠️ 扫不到任何已保存热点：
+    //   requireInRange=true（启动期）→ 返回 false，调用方**直接开 AP**，不再硬连（白等 10s）
+    //   否则（运行期重连）→ 沿用上次的 wifiCfg 再试一次
     webLogln("⚠️ 已保存的 %d 组 WiFi 都不在扫描范围内", wifiCount);
     return false;
   }
@@ -522,7 +526,11 @@ void     calBootCheck();
 void startAP();
 void stopAP();
 PowerState readPowerState();
-bool wifiPickBest();
+void _fallbackToRtcTime();
+bool syncTimeFromNTPBlocking(unsigned long maxMs);
+void ntpStart();
+void serviceNtpSync();
+bool wifiPickBest(bool requireInRange);
 // 只读数据的 JSON builder（HTTP 与 BLE 共用，定义在文件后半部）
 String buildStatusJson(bool overBLE);
 String buildHistoryJson(int page, int count, bool applyFilter);
@@ -715,22 +723,50 @@ bool wifiConnectSaved(bool allowAP) {
     return checkGatewayReachable(WiFi.localIP().toString(), "");
   }
 
-  // ---------- 静态：① 先 DHCP 连一次（学习网络参数）----------
-  WiFi.config(INADDR_NONE, INADDR_NONE);
-  WiFi.begin(wifiCfg.ssid, wifiCfg.password);
-  if (!waitConnected(20)) return bail("DHCP 学习阶段超时");
-  String dhcpIp = WiFi.localIP().toString();
-  wifiCfg.gw   = WiFi.gatewayIP();
-  wifiCfg.mask = WiFi.subnetMask();
-  wifiCfg.dns  = WiFi.dnsIP();
-  if ((uint32_t)wifiCfg.mask == 0) wifiCfg.mask = STA_MASK;      // 学习失败保留旧值/兑底
-  if ((uint32_t)wifiCfg.dns  == 0) wifiCfg.dns  = wifiCfg.gw;
-  saveWiFiConfig();                                             // 学习成果落盘（与手动填写同构）
+  // ---------- 静态：① 需要时才 DHCP 学一次网络参数（2026-10-03 改）----------
+  //   ⚠️ 用户指出：网关/掩码/DNS **学过就该缓存**（谁家网关天天变？），
+  //      原来每次启动都无条件重学 → 白等一个 DHCP 往返（1.7s，网关慢时最多 10s）+ 每次写盘。
+  //   现在：已学过 → 直接用缓存；若之后配静态/网关自检失败 → 再学一次兜底（自愈换路由器场景）。
+  bool gwKnown = ((uint32_t)wifiCfg.gw != 0) && ((uint32_t)wifiCfg.mask != 0);
+  String dhcpIp = "-";
+  auto doLearn = [&]() -> bool {
+    WiFi.config(INADDR_NONE, INADDR_NONE);
+    WiFi.begin(wifiCfg.ssid, wifiCfg.password);
+    if (!waitConnected(20)) return false;
+    dhcpIp = WiFi.localIP().toString();
+    wifiCfg.gw   = WiFi.gatewayIP();
+    wifiCfg.mask = WiFi.subnetMask();
+    wifiCfg.dns  = WiFi.dnsIP();
+    if ((uint32_t)wifiCfg.mask == 0) wifiCfg.mask = STA_MASK;
+    if ((uint32_t)wifiCfg.dns  == 0) wifiCfg.dns  = wifiCfg.gw;
+    // ★ 2026-10-03 关键修复：**必须回写 wifiList 再存盘**。
+    //   wifiCfg 是独立对象（由 wifiList 拷贝而来），只写它的话落盘仍是空值
+    //   → 下次开机又判"没学过" → 无限重复 DHCP 学习（用户实测：每次启动都白等一个往返）。
+    bool wrote = false;
+    for (int i = 0; i < wifiCount; i++) {
+      if (strcmp(wifiList[i].ssid, wifiCfg.ssid) == 0) {
+        wifiList[i].gw = wifiCfg.gw; wifiList[i].mask = wifiCfg.mask; wifiList[i].dns = wifiCfg.dns;
+        wrote = true; break;
+      }
+    }
+    if (!wrote) webLogln("⚠️ 学习成果回写失败：wifiList 里找不到 '%s'", wifiCfg.ssid);
+    saveWiFiConfig();
+    return true;
+  };
+  if (!gwKnown) {
+    webLogln("📥 首次配网 → DHCP 学习网络参数");
+    if (!doLearn()) return bail("DHCP 学习阶段超时");
+  } else {
+    webLog("📥 使用已学习的网络参数（跳过 DHCP 学习）: 网关 %s 掩码 %s DNS %s\n",
+           wifiCfg.gw.toString().c_str(), wifiCfg.mask.toString().c_str(), wifiCfg.dns.toString().c_str());
+  }
   // ⚠ 按字节构造基址：IPAddress 内部小端，搞错字节序会得到 227.168.31.0 这种鬼地址（实测踩到）
   IPAddress base((uint32_t)wifiCfg.gw & (uint32_t)wifiCfg.mask);
-  webLogln("📥 已学习网络参数: 网关 %s 掩码 %s DNS %s", wifiCfg.gw.toString().c_str(),
-           wifiCfg.mask.toString().c_str(), wifiCfg.dns.toString().c_str());
-  diag("DHCP 学习: gw=" + wifiCfg.gw.toString() + " mask=" + wifiCfg.mask.toString());
+  if (!gwKnown) {   // 只有**本次真的学了**才打印这两句（否则与"跳过"日志自相矛盾）
+    webLogln("📥 已学习网络参数: 网关 %s 掩码 %s DNS %s", wifiCfg.gw.toString().c_str(),
+             wifiCfg.mask.toString().c_str(), wifiCfg.dns.toString().c_str());
+    diag("DHCP 学习: gw=" + wifiCfg.gw.toString() + " mask=" + wifiCfg.mask.toString());
+  }
 
   // ---------- ② 查重：从末段(默认200)起，最多 5 个，ping 有回应 = 被占 ----------
   int start = wifiCfg.ipLast ? wifiCfg.ipLast : 200;
@@ -842,7 +878,7 @@ bool checkGatewayReachable(const String& myIp, const String& dhcpPrevIp) {
 // ---- 开 WiFi（开机 / 固定用）：多组先挑最强，连不上 AP 兜底 ----
 void wifiUp() {
   WiFi.mode(WIFI_STA);
-  if (wifiCount > 1) wifiPickBest();
+  if (wifiCount > 1) wifiPickBest(false);
   wifiConnectSaved(true);
 }
 
@@ -1840,6 +1876,7 @@ WebServer server(80);
 unsigned long recordCount = 0;
 bool bmpOK = false, shtOK = false;
 bool sdOK = false, rtcOK = false;
+bool rtcLostPower = false;   // DS3231 是否掉过电（掉电则时间不可信，需 NTP）
 bool timeSynced = false;
 bool hasSyncedOnce = false;
 
@@ -2591,7 +2628,8 @@ void initRTC() {
   } else {
     webLogln("✅ DS3231 RTC 已就绪");
     rtcOK = true;
-    if (rtc.lostPower()) webLogln("⚠️ RTC 掉电，需通过 NTP 设置时间");
+    rtcLostPower = rtc.lostPower();
+    if (rtcLostPower) webLogln("⚠️ RTC 掉电，需通过 NTP 设置时间");
   }
 }
 
@@ -2625,7 +2663,85 @@ void cleanupUntimestampedData() {
   hasSyncedOnce = false;
 }
 
-void syncTimeFromNTP() {
+// ===== NTP：非阻塞启动 + 轮询完成（2026-10-03 重构）=====
+//   背景：原 syncTimeFromNTP() 用 delay(250) 轮询最多 40 次 = **最多阻塞 10 秒**，
+//        在启动路径上非常拖时间。
+//   拆分：
+//     · ntpStart()      —— 只调 configTime() 启动 SNTP，**立即返回**
+//     · ntpIsDone()     —— 查系统时间是否已被 SNTP 拉正
+//     · syncTimeFromNTPBlocking(ms) —— 需要"立刻拿到时间"时才用（如 RTC 掉电）
+//   ⚠️ 完成后的落地动作（写 RTC / 记 ntpLastOkAt）统一在 serviceNtpSync() 里做。
+bool ntpPending = false;          // SNTP 已启动、等结果
+unsigned long ntpStartedMs = 0;
+
+void ntpStart() {
+  configTime(8 * 3600, 0, "pool.ntp.org", "ntp.aliyun.com");
+  ntpPending   = true;
+  ntpStartedMs = millis();
+  webLogln("🕐 NTP 同步已启动（非阻塞）");
+}
+
+bool ntpIsDone() { return time(nullptr) >= 1000000000; }
+
+// 需要立刻拿到时间时用（会阻塞）；返回是否成功
+bool syncTimeFromNTPBlocking(unsigned long maxMs = 10000UL) {
+  time_t now = 0;
+  unsigned long t0 = millis();
+  while ((now = time(nullptr)) < 1000000000) {
+    if (millis() - t0 > maxMs) break;
+    delay(100);
+  }
+  if (now >= 1000000000) {
+    timeSynced = true; hasSyncedOnce = true;
+    ntpLastOkAt = now;
+    struct timeval tv = { now, 0 };
+    settimeofday(&tv, nullptr);
+    char buf[30]; strftime(buf, 30, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    webLog("✅ NTP: %s\n", buf);
+    if (rtcOK) { rtc.adjust(DateTime(now)); webLogln("✅ RTC 已同步 NTP 时间"); }
+    cleanupUntimestampedData();
+    ntpPending = false;
+    return true;
+  }
+  webLogln("⚠️ NTP 超时（改用 RTC 时间）");
+  _fallbackToRtcTime();
+  return false;
+}
+
+// 时间回退到 RTC（NTP 不可用时的保底）
+void _fallbackToRtcTime() {
+  if (!rtcOK) return;
+  DateTime dt = rtc.now();
+  time_t rtcTime = dt.unixtime();
+  if (rtcTime >= 1000000000) {
+    struct timeval tv = { rtcTime, 0 };
+    settimeofday(&tv, nullptr);
+    timeSynced = true; hasSyncedOnce = true;
+    char buf[30]; strftime(buf, 30, "%Y-%m-%d %H:%M:%S", localtime(&rtcTime));
+    webLog("✅ 从 RTC 获取时间: %s\n", buf);
+    cleanupUntimestampedData();
+  }
+}
+
+// loop 每圈调用：SNTP 有结果就落地（写 RTC、记时刻），超时就回退 RTC
+void serviceNtpSync() {
+  if (!ntpPending) return;
+  if (ntpIsDone()) {
+    time_t now = time(nullptr);
+    timeSynced = true; hasSyncedOnce = true;
+    ntpLastOkAt = now;
+    if (rtcOK) { rtc.adjust(DateTime(now)); webLogln("✅ NTP 已同步（并写入 RTC）"); }
+    else       { webLogln("✅ NTP 已同步"); }
+    cleanupUntimestampedData();
+    ntpPending = false;
+  } else if (millis() - ntpStartedMs > 20000UL) {   // 20s 无结果 → 回退
+    webLogln("⚠️ NTP 20 秒无结果 → 回退 RTC 时间");
+    _fallbackToRtcTime();
+    ntpPending = false;
+  }
+}
+// 兼容旧调用：**会阻塞**（最多 10s）。新代码请用 ntpStart() / serviceNtpSync()。
+void syncTimeFromNTPLegacy() {
   webLog("🕐 NTP 同步...");
   configTime(8 * 3600, 0, "pool.ntp.org", "ntp.aliyun.com");
   time_t now = 0;
@@ -4012,7 +4128,7 @@ doScan();
     // 存完就试着重连（装进外壳后够不到 EN 键，不能让它干等 60 秒或等人按按钮）
     if (!wasConnected) {
       delay(300);
-      if (wifiCount > 1) wifiPickBest();
+      if (wifiCount > 1) wifiPickBest(false);
       // 不在 HTTP 回调里直接折腾网卡（容易卡死）：交给 loop 的「连网会话」去做（含静态策略）
       beginWifiSession(String(wifiCfg.ssid));
       webLogln("🔁 保存后自动重连（连网会话）: %s", wifiCfg.ssid);
@@ -4037,7 +4153,7 @@ doScan();
       "<meta charset='UTF-8'><h3>🔁 正在重新选择信号最强的一组并连接…</h3>"
       "<p>约 10 秒后看设备屏幕上的横幅。若切到了别的网络，本机也要连到同一个 WiFi 才能再访问设备。<a href='/'>返回主页</a></p>");
     delay(300);
-    if (wifiCount > 1) wifiPickBest();
+    if (wifiCount > 1) wifiPickBest(false);
     beginWifiSession(String(wifiCfg.ssid));      // 交给 loop（含静态 IP 策略：学习 → 查重 → 静态）
     webLogln("🔁 手动重连（连网会话）: %s", wifiCfg.ssid);
   });
@@ -4675,7 +4791,7 @@ void serviceWifiSession() {
       uiDisplay.showToast(UI_TOAST_AP, "AP 配网", "无已存网络", AP_IP_STR, 20000);
     } else {
       WiFi.mode(WIFI_STA);
-      bool found = (wifiCount > 1) ? wifiPickBest() : true;
+      bool found = (wifiCount > 1) ? wifiPickBest(false) : true;
       if (!found) {
         webLogln("🔘 已保存的 %d 组都不在附近 → 转 AP 配网", wifiCount);
         startAPWithTimeout();
@@ -4720,9 +4836,16 @@ void serviceWifiSession() {
 }
 
 void setup() {
-  chargeInit();          // ← 最先执行：确定 IO17/IO18 初始电平，杜绝栅极/CE 悬空
+  // ============================================================
+  // 启动流程（2026-10-03 重排）
+  //   ① 保命与上电安全   ② 尽早点亮屏幕   ③ 采集能力就绪   ④ 联网与服务（可慢）
+  //   要点：屏幕 ~1 秒亮；电压读数趁无明显负载（才准）；SD 挂载延后；delay 1000→500
+  // ============================================================
+
+  // ---------- ① 保命与上电安全 ----------
+  chargeInit();                        // 必须最先：确定 CE/ISET/EN 电平，杜绝悬空
   Serial.begin(115200);
-  delay(1000);
+  delay(500);                          // 等 USB 串口枚举（原 1000ms，用户裁定缩短）
 
   webLogln("\n=== 微型气象站 v2.1 (BMP580 + SHT30 + DS3231 + SD / ESP32-S3) ===");
   webLog("🔌 充电控制初始态：%s | %s（IO18=%d IO17=%d）\n",
@@ -4732,24 +4855,14 @@ void setup() {
 
   setenv("TZ", "CST-8", 1);
   tzset();
+  Wire.begin(47, 48);
 
-  Wire.begin(47, 48);           // v2.2：I2C -> SDA=IO47 SCL=IO48
-
-  // ---- 电池监测（INA230）初始化 —— v2.2 唯一电池电压来源 ----
-  //   ⚠️ 2026-10-02：把 FEh/FFh 的读取与打印**提到 begin() 之前**。
-  //      原实现把打印放在 `if (begin(...))` 成功分支里，而 begin() 内含身份校验 →
-  //      一旦校验不过（换 INA230）就只打一句"未就绪"，**看不到真实 ID**，无法据此修正校验。
-  //      现在无论成败都先打印真实 manu/die（见 硬件核对清单 第七节 清单 1）。
+  // INA230 初始化（含身份诊断；详见 实现细节.md D29）
   {
     uint16_t manu = 0, die = 0;
-    // ⚠️ 2026-10-03 修正调用顺序：`checkIdentity()` 内部走 `readReg()`，而 `readReg()` 依赖
-    //    `_wire` —— 该成员**只在 `begin()` 里赋值**。原先把 checkIdentity 放在 begin 之前，
-    //    导致 `_wire == nullptr` → 必然返回 false → 日志误报"无应答(总线浮空)"（诊断自己坏了）。
-    //    正确顺序：**先 begin()（它内部已做身份校验），再 checkIdentity() 只为读出 ID 值做展示**。
+    // ⚠️ 顺序：先 begin()（内部做身份校验并设置 _wire），再 checkIdentity() 只为读出 ID 展示。
     bool began = ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A);
     bool idOk  = began ? ina230.checkIdentity(&manu, &die) : false;
-    // ⚠️ INA230 实测 MANU/DIE = 0x0000/0x0000（手册无 FEh 项、FFh 未给值）→ **全 0 是正常的**，
-    //    不能据此判"无应答"（那是 0xFFFF 总线浮空的含义）。只有全 1 才算不在。
     webLog("🔎 INA230 身份: MANU=0x%04X DIE=0x%04X (%s)\n",
            manu, die, idOk ? "在位(全0为INA230正常值)" : "无应答(总线浮空)");
     if (began) {
@@ -4761,18 +4874,14 @@ void setup() {
     }
   }
 
-  initRTC();
-  initFS();
-  initSD();
-  initAvgEngine();
-  loadDeviceMode();   // ← 读设备模式(固定/移动)
-  uiDisplay.init();   // ← 屏幕初始化（铺底图）
-  calBootCheck();     // ← V2.1.1-b：载入标定曲线；上次标定中途掉电 → 自动建表并提示
+  // ★ 电源状态：此刻只有 ESP32 在耗电，电池电压**最接近静置** → 冷/热分流读数才准
+  PowerState psWake = readPowerState();
+  g_power = psWake;
+  serviceBatteryStartup();             // 冷/热启动分流（阈值 PWR_COLD_START_V）
+  applyChargeStrategy(psWake);
 
   // ---- 唤醒后的电源复核：若唤醒（含深睡唤醒）后仍是低电异常，立即再睡（保命） ----
-  PowerState psWake = readPowerState();
-  g_power = psWake;                   // 开机就把真实电源状态交给屏幕
-  applyChargeStrategy(psWake);        // 开机立即按模式应用充电策略（固定 80% 停充判定）
+  //   （psWake / g_power / applyChargeStrategy 已在上面 ① 段完成）
   if (!psWake.powered && psWake.inaOK && psWake.battVolt < battSleepV) {
     webLogln("🔋 唤醒后电压仍过低 (%.2fV)，重新进入深睡保护", psWake.battVolt);
     enterDeepSleepIfNeeded();
@@ -4788,68 +4897,30 @@ void setup() {
     webLogln("🔋 电池供电 %.2fV，正常工作", psWake.battVolt);
   }
 
-  // ---- 先把屏幕顶栏画出来（时间未同步时显示 --:--，WiFi 图标随后再更新）----
-  uiSyncStatus();
-  uiDisplay.showTop(time(nullptr));
+  // ---------- ② 尽早点亮屏幕 ----------
+  initRTC();
+  initFS();
+  loadDeviceMode();                    // 读固定/移动（充电策略与顶栏都要用）
+  calBootCheck();                      // 载入标定曲线 → 低电三档
+  uiDisplay.init();
 
-  // ---- 加载网页保存的 WiFi 配置 ----
-  loadWiFiConfig();
-
-  bool needAP = true;
-  if (wifiCount > 1) wifiPickBest();      // 多组：扫一遍挑信号最强的那组
-  if (strlen(wifiCfg.ssid) > 0) {
-    webLog("📶 尝试连接 '%s'（已保存 %d 组，%s）...\n", wifiCfg.ssid, wifiCount, wifiCfg.useIP ? "静态" : "DHCP");
-    // 统一走静态 IP 策略：DHCP 学习 → ping 查重 → 静态重连 → 不行退回 DHCP（失败则内部开 AP）
-    bool ok = wifiConnectSaved(true);
-    if (ok) {
-      needAP = false;
-      webLog("\n✅ IPv4: %s%s\n", WiFi.localIP().toString().c_str(), wifiStaticFallback ? "（静态失败，已退回 DHCP）" : "");
-      // 屏幕提示：连上了（√ WiFi OK + SSID + IP，20 秒后自动还原）
-      char tl2[48], tl3[32];
-      buildSsidLine(tl2, sizeof(tl2), wifiCfg.ssid);
-      snprintf(tl3, sizeof(tl3), "%s", WiFi.localIP().toString().c_str());
-      uiDisplay.showToast(UI_TOAST_OK, wifiOkTitle(), tl2, tl3, 20000);
-
-      // 注：v2.0 起移除 IPv6 —— 原来等 globalIPv6 最多空耗 30×500ms=15秒，
-      //     而且多数网络只能拿到链路本地地址，对局域网访问网页毫无用处。
-
-      syncTimeFromNTP();
-    } else {
-      webLogln("\n⚠️ WiFi连接失败，仅AP模式");
-      // 屏幕提示：连不上——**只报"试连这个 WiFi 失败了"，不给 IP**（免得误以为连上了去访问）；
-      //           10 秒后接着弹热点横幅，那里才给热点名 + 热点 IP
-      char tl2[48], tl3[48];
-      buildSsidLine(tl2, sizeof(tl2), wifiCfg.ssid);
-      uiDisplay.showToast(UI_TOAST_FAIL, "WiFi FAIL", tl2, "not connected", 10000);
-      buildSsidLine(tl3, sizeof(tl3), AP_SSID);
-      uiDisplay.queueToast(UI_TOAST_AP, "AP MODE", tl3, AP_IP_STR, 20000);
-      if (rtcOK) {
-        DateTime dt = rtc.now();
-        time_t rtcTime = dt.unixtime();
-        if (rtcTime >= 1000000000) {
-          struct timeval tv = { rtcTime, 0 };
-          settimeofday(&tv, nullptr);
-          timeSynced = true; hasSyncedOnce = true;
-          char buf[30]; strftime(buf, 30, "%Y-%m-%d %H:%M:%S", localtime(&rtcTime));
-          webLog("✅ RTC 时间: %s\n", buf);
-          cleanupUntimestampedData();
-        }
-      }
+  // RTC 有电就先设系统时间 → 屏幕立刻显示正确时间（不必等 WiFi/NTP）
+  if (rtcOK && !rtcLostPower) {
+    DateTime dt = rtc.now();
+    time_t rt = dt.unixtime();
+    if (rt >= 1000000000) {
+      struct timeval tv = { rt, 0 };
+      settimeofday(&tv, nullptr);
+      timeSynced = true; hasSyncedOnce = true;
+      char buf[30]; strftime(buf, 30, "%Y-%m-%d %H:%M:%S", localtime(&rt));
+      webLog("✅ RTC 时间: %s\n", buf);
     }
-  } else {
-    webLogln("\n⚠️ 无WiFi配置，稍后开启AP配置模式（http://192.168.5.1 设置WiFi）");
   }
 
-  // ===== V2.1.1 Bug②：把「今天」已经采过的数据回灌进今日统计 =====
-  //   放在这里的原因：① 系统时间已就绪（NTP / RTC 两条分支都设过 timeSynced）；
-  //   ② 日平均引擎（initAvgEngine）已起、开机没有跨天动作 → 回灌不会误触发 rolloverDay；
-  //   ③ 在第一次采样（loop 的 :00/:30）之前 → 网页/屏幕一开机就是完整的今日极值。
-  backfillTodayFromLog();
+  uiSyncStatus();
+  uiDisplay.showTop(time(nullptr));    // ← 屏幕在此亮起
 
-  // ---- AP 按需开启：连上 STA 就不开 AP（省电降热） ----
-  if (needAP) startAP();
-  else webLogln("✅ 已连接 WiFi，AP 未开启（省电模式）");
-
+  // ---------- ③ 采集能力就绪（传感器提前于联网）----------
   // ---- BMP580 初始化 ----
   if (!bmp.begin(0x47, &Wire)) {
     webLogln("⚠️ BMP580 未在 0x47 找到");
@@ -4874,24 +4945,66 @@ void setup() {
     if (!sht.begin(0x45)) { webLogln("❌ SHT30 初始化失败"); shtOK = false; }
     else { webLogln("✅ SHT30 @ 0x45"); shtOK = true; }
   } else { webLogln("✅ SHT30 @ 0x44"); shtOK = true; }
+  initAvgEngine();
 
-  archivePump();       // 归档分片泵：每圈最多 40 行，**不阻塞采样**（2026-10-02）
+  // ---------- ④ 联网与服务（可慢；SD 挂载也延后到这里）----------
+  loadWiFiConfig();
+
+  bool needAP = true;
+  // ★ 2026-10-03：**先扫，扫不到就不连**（原来扫不到仍硬连 → 白等 DHCP 超时最多 10s）
+  bool inRange = false;
+  if (wifiCount > 0) {
+    inRange = wifiPickBest(true);        // requireInRange=true：扫不到返回 false
+  }
+  if (strlen(wifiCfg.ssid) > 0 && !inRange) {
+    webLog("⚠️ '%s' 不在扫描范围内 → 跳过连接，直接开 AP（省掉一次无用的 DHCP 超时）\n", wifiCfg.ssid);
+  }
+  if (strlen(wifiCfg.ssid) > 0 && inRange) {
+    webLog("📶 尝试连接 '%s'（已保存 %d 组，%s）...\n", wifiCfg.ssid, wifiCount, wifiCfg.useIP ? "静态" : "DHCP");
+    bool ok = wifiConnectSaved(true);
+    if (ok) {
+      needAP = false;
+      webLog("\n✅ IPv4: %s%s\n", WiFi.localIP().toString().c_str(), wifiStaticFallback ? "（静态失败，已退回 DHCP）" : "");
+      // 屏幕提示：连上了（√ WiFi OK + SSID + IP，20 秒后自动还原）
+      char tl2[48], tl3[32];
+      buildSsidLine(tl2, sizeof(tl2), wifiCfg.ssid);
+      snprintf(tl3, sizeof(tl3), "%s", WiFi.localIP().toString().c_str());
+      uiDisplay.showToast(UI_TOAST_OK, wifiOkTitle(), tl2, tl3, 20000);
+      // NTP：RTC 掉电时必须立刻拿到时间（阻塞等一次）；否则非阻塞，交给 loop
+      if (rtcLostPower) { webLogln("🕐 RTC 掉电 → 阻塞等一次 NTP"); syncTimeFromNTPBlocking(10000UL); }
+      else              { ntpStart(); }
+    } else {
+      webLogln("\n⚠️ WiFi连接失败，仅AP模式");
+      // 屏幕提示：连不上——**只报"试连这个 WiFi 失败了"，不给 IP**（免得误以为连上了去访问）；
+      //           10 秒后接着弹热点横幅，那里才给热点名 + 热点 IP
+      char tl2[48], tl3[48];
+      buildSsidLine(tl2, sizeof(tl2), wifiCfg.ssid);
+      uiDisplay.showToast(UI_TOAST_FAIL, "WiFi FAIL", tl2, "not connected", 10000);
+      buildSsidLine(tl3, sizeof(tl3), AP_SSID);
+      uiDisplay.queueToast(UI_TOAST_AP, "AP MODE", tl3, AP_IP_STR, 20000);
+      _fallbackToRtcTime();
+    }
+  } else {
+    webLogln("\n⚠️ 无WiFi配置，稍后开启AP配置模式（http://192.168.5.1 设置WiFi）");
+    _fallbackToRtcTime();
+  }
+
+  backfillTodayFromLog();
+
+  if (needAP) startAP();
+  else webLogln("✅ 已连接 WiFi，AP 未开启（省电模式）");
+
+  initSD();                            // SD 挂载延后（用户：启动时爱挂不挂）
+  archivePump();
   checkAndArchive();
   startServer();
   webLog("🌐 服务器已启动 | 内存 %d 条\n", bufferSize);
 
-  // 无线互斥：按设计文档表格决定开局用哪种（固定/插电 → WiFi；仅「移动+电池」→ 蓝牙）
-  pinMode(PIN_WIFI_BTN, INPUT_PULLUP);      // 实体 WiFi 开关；未焊按钮时上拉 = 不触发，安全
-  curWireless = WL_WIFI;                    // 上面已经起过 WiFi/AP
-  updateWireless();                         // 若判定该用蓝牙，这里会关 WiFi、开蓝牙
+  pinMode(PIN_WIFI_BTN, INPUT_PULLUP);
+  curWireless = WL_WIFI;
+  updateWireless();
 
-  // ===== USB 枚举：判定对端是"电脑主机"还是"充电器"，据此定 EN1/EN2 与充电使能 =====
-  //   放在此处（服务器已起、webLog 可用）——它是阻塞的（约 3s 观察 SOF 帧号），
-  //   但此时系统已完全启动、电源已稳，不怕这点延迟。
-  // ---- 冷启动 / 热启动 分流（须在 INA230 之后）----
-  serviceBatteryStartup();
-
-  serviceUsbEnum();
+  serviceUsbEnum();                    // USB 枚举（SOF 帧号）：主机 / 充电器
 }
 
 // ========== loop ==========
@@ -5698,7 +5811,7 @@ void loop() {
         if (due) {
           ntpTriedThisBoot = true;
           webLogln("🕐 距上次 NTP 成功已超 3 天（或从未成功）→ 借现成的 WiFi 重试一次");
-          syncTimeFromNTP();
+          ntpStart();                    // 非阻塞：结果由 loop 的 serviceNtpSync() 落地
         }
       }
     } else {
@@ -5716,7 +5829,7 @@ void loop() {
         if (due) {
           ntpTriedThisBoot = true;
           webLogln("🕐 距上次 NTP 成功已超 3 天（或从未成功）→ 借现成的 WiFi 重试一次");
-          syncTimeFromNTP();
+          ntpStart();                    // 非阻塞：结果由 loop 的 serviceNtpSync() 落地
         }
       }
     }
@@ -5744,7 +5857,7 @@ void loop() {
         apClosedMs = 0;
         webLogln("⚠️ WiFi 断线，重新开启 AP 配置模式");
         startAP();
-        if (wifiCount > 1) wifiPickBest();           // 多组：重连前重新挑最强的
+        if (wifiCount > 1) wifiPickBest(false);           // 多组：重连前重新挑最强的
         WiFi.begin(wifiCfg.ssid, wifiCfg.password);  // 后台继续重连
       }
     } else {
