@@ -56,6 +56,21 @@
 //   用法：默认 0（安全）。启用请改 1 后编译。
 //   依据：硬件核对清单 第五节清单 3（待实装）。
 #define USB_ENUM_DETECT 0
+
+// ===== 【阶段1·安全启动】2026-10-03 =====
+//   故障：插着 USB 拔掉电池 → 设备反复 BROWNOUT 起不来。
+//   实测证据（用户示波器/万用表）：
+//     · 3.3V 轨**一直有电** → 排除"3.3V 掉到 0"
+//     · EN1/EN2 启动后**仍无一拉高** → 输入限流恒为 (0,0)=USB100=100mA
+//     · 拔电池瞬间 PGOOD **无高脉冲** → 排除 PR1/PGOOD 误动作
+//   结论：**100mA 输入限流撑不住系统启动峰值**（WiFi 初始化瞬时 300~500mA）。
+//         之前"能启动"是靠电池补峰值；一旦拔掉电池就塌。
+//   本阶段措施（最小改动，先定论根因）：
+//     ① CE 拉高 = **禁止充电**（不跟系统抢输入电流）
+//     ② EN1 抬高 → (EN2,EN1)=(0,1) = **USB500 = 500mA**（USB 规范安全值）
+//     ③ PR1 保持低（LDO）
+//   ⚠️ 设为 0 可整体回退到"老逻辑"（允许充电 + 不驱动 EN1/EN2）
+#define PWR_SAFE_START 1
 #include "web_icon.h"      // ← iOS 主屏图标 PNG 字节数组（apple-touch-icon 必须 PNG）
 
 // 电源状态结构体（放在文件顶部：Arduino 会给所有函数生成原型到顶部，
@@ -1357,7 +1372,7 @@ bool isExternallyPowered() { return digitalRead(PIN_PGOOD) == LOW; }
 //       调用方只需 chargeSetCurrent() / chargeSetEnabled()，不直接碰 IO 电平。
 // 充电使能与「充电中」状态区别：CE 是“允许/禁止充电”，CHG 是“当前是否在充电”。
 void chargeInit() {
-  // 上电安全默认：慢充 + 允许充电。
+  // 上电安全默认。
   // ⚠️ 顺序很关键：必须先 pinMode(OUTPUT) 再 digitalWrite。
   //    实测（ESP32 core 3.3.11 / S3）：软复位（ESP.restart）后，
   //    「先 digitalWrite 再 pinMode」不会真正拉低引脚，引脚会保留上一次会话的电平——
@@ -1365,10 +1380,29 @@ void chargeInit() {
   //    改为先设方向再写电平，并末尾复写一次兜底。
   pinMode(PIN_ISET, OUTPUT);
   pinMode(PIN_CE, OUTPUT);
-  digitalWrite(PIN_ISET, LOW);   // MOS 关断 → 慢充
-  digitalWrite(PIN_CE, LOW);     // CE 低 → 允许充电
+  digitalWrite(PIN_ISET, LOW);   // MOS 关断 → 慢充档
+
+#if PWR_SAFE_START
+  // ★【阶段1】CE 拉高 = 禁止充电：把输入电流全部留给系统，不跟充电抢
+  digitalWrite(PIN_CE, HIGH);
+
+  // ★【阶段1】把 BQ24074 输入限流抬到 USB500(500mA)，**早于 WiFi 初始化**
+  //   手册真值表：(EN2,EN1)=(0,0)100mA / (0,1)500mA / (1,0)ISET档
+  //   ⚠️ 只抬 EN1、EN2 保持低 → 500mA 是 USB 规范安全值，
+  //      即使插在仅能出 500mA 的电脑口也不会过载（设计文档 435 行的意图）
+  pinMode(PIN_EN1, OUTPUT);
+  pinMode(PIN_EN2, OUTPUT);
+  digitalWrite(PIN_EN1, HIGH);
+  digitalWrite(PIN_EN2, LOW);
+  digitalWrite(PIN_EN1, HIGH);   // 兜底复写
+  digitalWrite(PIN_EN2, LOW);
+
+  webLogln("🔌 【安全启动】CE=高(禁充) | EN1=高 EN2=低 → BQ24074 输入限流 = USB500(500mA)");
+#else
+  digitalWrite(PIN_CE, LOW);     // CE 低 → 允许充电（老逻辑）
+  webLogln("🔌 充电控制初始态：允许充电 | 输入限流 = 上电默认 (0,0)=USB100");
+#endif
   digitalWrite(PIN_ISET, LOW);   // 兜底复写
-  digitalWrite(PIN_CE, LOW);
 
   // ===== TPS2117 PR1 上电安全默认（v2.2 新增）=====
   //   ⛔ **必须最先拉低**：PR1 低 → 选 VIN2(LDO 3.3V)；PR1 高 → 选 VIN1(电池直供)。
@@ -1503,6 +1537,12 @@ void servicePr1Interlock(const PowerState& p) {
 }
 
 void applyChargeStrategy(const PowerState& ps) {
+#if PWR_SAFE_START
+  // ★【阶段1】安全启动模式：**绝不使能充电**（CE 恒高）。
+  //   本阶段只验证"禁充 + USB500 能否让系统稳定启动"，充电策略暂不参与。
+  digitalWrite(PIN_CE, HIGH);
+  return;
+#endif
   // 1) 电流档位随模式切换（仅在变化时打印，避免日志刷屏）
   //    V2.1.1-a：移动默认快充；移动+插电时按 IO9 可临时切慢充（chargeForceSlow，拔插即失效）
   bool wantFast = (deviceMode == 1) && !chargeForceSlow;
@@ -4528,12 +4568,17 @@ void setup() {
   //      现在无论成败都先打印真实 manu/die（见 硬件核对清单 第七节 清单 1）。
   {
     uint16_t manu = 0, die = 0;
-    bool idOk = ina230.checkIdentity(&manu, &die);
+    // ⚠️ 2026-10-03 修正调用顺序：`checkIdentity()` 内部走 `readReg()`，而 `readReg()` 依赖
+    //    `_wire` —— 该成员**只在 `begin()` 里赋值**。原先把 checkIdentity 放在 begin 之前，
+    //    导致 `_wire == nullptr` → 必然返回 false → 日志误报"无应答(总线浮空)"（诊断自己坏了）。
+    //    正确顺序：**先 begin()（它内部已做身份校验），再 checkIdentity() 只为读出 ID 值做展示**。
+    bool began = ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A);
+    bool idOk  = began ? ina230.checkIdentity(&manu, &die) : false;
     // ⚠️ INA230 实测 MANU/DIE = 0x0000/0x0000（手册无 FEh 项、FFh 未给值）→ **全 0 是正常的**，
     //    不能据此判"无应答"（那是 0xFFFF 总线浮空的含义）。只有全 1 才算不在。
     webLog("🔎 INA230 身份: MANU=0x%04X DIE=0x%04X (%s)\n",
            manu, die, idOk ? "在位(全0为INA230正常值)" : "无应答(总线浮空)");
-    if (ina230.begin(&Wire, INA230_ADDR, INA230_R_SHUNT, INA230_MAX_A)) {
+    if (began) {
       webLog("✅ INA230 @0x%02X (MANU=0x%04X DIE=0x%04X) CAL=%u %.3fmA/bit 有效分辨率%.3fmA 量程±%.2fA\n",
              INA230_ADDR, manu, die, ina230.calibration(),
              ina230.currentLsb() * 1000.0f, ina230.currentResolution_mA(), ina230.currentMax_A());
