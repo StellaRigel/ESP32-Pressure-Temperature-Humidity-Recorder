@@ -1,0 +1,484 @@
+
+========== p1 ==========
+    protection
+    * NTC thermistor input
+    * Proprietary start-up sequence limits inrush current
+    * Status indication - charging/done, power good
+    * Safety-Related Certification:
+    - IEC 62368-1 Certification (BQ24072)
+    2 Applications
+    * TWS Charging case and headphones
+    ---
+    EN2
+    TS
+    TEMP PACK+
+    PACK-
+    SYSTEM
+    SYSOFF
+    System
+    ON/OFF
+    ---
+
+========== p3 ==========
+    * Changed From: VIN(DT) To: VBAT + VIN(DT) in Table 9-1 ....................................................................................28
+    * Changed INTC To: ITS in Figure 9-9 .................................................................................................................. 29
+    Changes from Revision J (January 2015) to Revision K (March 2015) Page
+    * Deleted package type code from Device Comparison Table. See the POA at the end of the data sheet. ........ 6
+    * Changed ICHG Battery fast charge current range MIN specification from "150 mA" to "100 mA"..................... 12
+    Changes from Revision I (January 2014) to Revision J (January 2015) Page
+    * Added ESD Ratings table, Feature Description section, Device Functional Modes, Application and
+    Implementation section, Power Supply Recommendations section, Layout section, Device and
+    ---
+
+========== p6 ==========
+    6 Device Comparison Table
+    PART NUMBER (1) (2) VOVP VBAT(REG) VOUT(REG) VDPPM TS METHOD OPTIONAL
+    FUNCTION PACKAGE
+    BQ24072 6.6 V 4.2 V VBAT + 225 mV VO(REG) - 100 mV
+    Current Based
+    TD
+    RGT0016C
+    BQ24073 6.6 V 4.2 V 4.4 V VO(REG) - 100 mV TD
+    ---
+
+========== p9 ==========
+    desired length. Leave TMR unconnected to set the timers to the default values.
+    TS 1 1 1 I
+    External NTC Thermistor Input. Connect the TS input to the NTC thermistor in the battery pack. TS monitors a
+    10kΩ NTC thermistor. For applications that do not use the TS function, connect a 10-kΩ fixed resistor from TS
+    to VSS to maintain a valid voltage level on TS.
+    VSS 8 8 8 - Ground. Connect to the thermal pad and to the ground rail of the circuit.
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    ---
+    TS 1 1 1 I
+    External NTC Thermistor Input. Connect the TS input to the NTC thermistor in the battery pack. TS monitors a
+    10kΩ NTC thermistor. For applications that do not use the TS function, connect a 10-kΩ fixed resistor from TS
+    to VSS to maintain a valid voltage level on TS.
+    VSS 8 8 8 - Ground. Connect to the thermal pad and to the ground rail of the circuit.
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    ---
+    External NTC Thermistor Input. Connect the TS input to the NTC thermistor in the battery pack. TS monitors a
+    10kΩ NTC thermistor. For applications that do not use the TS function, connect a 10-kΩ fixed resistor from TS
+    to VSS to maintain a valid voltage level on TS.
+    VSS 8 8 8 - Ground. Connect to the thermal pad and to the ground rail of the circuit.
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    0 1 500 mA. USB500 mode
+    ---
+    10kΩ NTC thermistor. For applications that do not use the TS function, connect a 10-kΩ fixed resistor from TS
+    to VSS to maintain a valid voltage level on TS.
+    VSS 8 8 8 - Ground. Connect to the thermal pad and to the ground rail of the circuit.
+    Table 7-2. EN1/EN2 Settings
+    EN2 EN1 MAXIMUM INPUT CURRENT INTO IN PIN
+    0 0 100 mA. USB100 mode
+    0 1 500 mA. USB500 mode
+    1 0 Set by an external resistor from ILIM to VSS
+    ---
+
+========== p10 ==========
+    BAT (with respect to VSS) -0.3 5 V
+    OUT, EN1, EN2, CE, TS, ISET, PGOOD, CHG, ILIM,
+    TMR, ITERM, SYSOFF, TD (with respect to VSS) -0.3 7 V
+    II Input Current IN 1.6 A
+    IO
+    Output Current
+    (Continuous)
+    OUT 5 A
+    ---
+
+========== p13 ==========
+    KTMR Timer factor 36 48 60 s/kΩ
+    BATTERY-PACK NTC MONITOR(1)
+    INTC NTC bias current VIN > UVLO and VIN > VBAT + VIN(DT) 72 75 78 μA
+    VHOT High temperature trip point Battery charging, VTS Falling 270 300 330 mV
+    VHYS(HOT) Hysteresis on high trip point Battery charging, VTS Rising from VHOT 30 mV
+    VCOLD Low temperature trip point Battery charging, VTS Rising 2000 2100 2200 mV
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    ---
+    BATTERY-PACK NTC MONITOR(1)
+    INTC NTC bias current VIN > UVLO and VIN > VBAT + VIN(DT) 72 75 78 μA
+    VHOT High temperature trip point Battery charging, VTS Falling 270 300 330 mV
+    VHYS(HOT) Hysteresis on high trip point Battery charging, VTS Rising from VHOT 30 mV
+    VCOLD Low temperature trip point Battery charging, VTS Rising 2000 2100 2200 mV
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    ---
+    INTC NTC bias current VIN > UVLO and VIN > VBAT + VIN(DT) 72 75 78 μA
+    VHOT High temperature trip point Battery charging, VTS Falling 270 300 330 mV
+    VHYS(HOT) Hysteresis on high trip point Battery charging, VTS Rising from VHOT 30 mV
+    VCOLD Low temperature trip point Battery charging, VTS Rising 2000 2100 2200 mV
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    THERMAL REGULATION
+    ---
+    VHOT High temperature trip point Battery charging, VTS Falling 270 300 330 mV
+    VHYS(HOT) Hysteresis on high trip point Battery charging, VTS Rising from VHOT 30 mV
+    VCOLD Low temperature trip point Battery charging, VTS Rising 2000 2100 2200 mV
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    THERMAL REGULATION
+    TJ(REG) Temperature regulation limit 125 °C
+    ---
+    VHYS(HOT) Hysteresis on high trip point Battery charging, VTS Rising from VHOT 30 mV
+    VCOLD Low temperature trip point Battery charging, VTS Rising 2000 2100 2200 mV
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    THERMAL REGULATION
+    TJ(REG) Temperature regulation limit 125 °C
+    TJ(OFF) Thermal shutdown temperature TJ Rising 155 °C
+    ---
+    VCOLD Low temperature trip point Battery charging, VTS Rising 2000 2100 2200 mV
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    THERMAL REGULATION
+    TJ(REG) Temperature regulation limit 125 °C
+    TJ(OFF) Thermal shutdown temperature TJ Rising 155 °C
+    TJ(OFF-HYS) Thermal shutdown hysteresis 20 °C
+    ---
+    VHYS(COLD) Hysteresis on low trip point Battery charging, VTS Falling from VCOLD 300 mV
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    THERMAL REGULATION
+    TJ(REG) Temperature regulation limit 125 °C
+    TJ(OFF) Thermal shutdown temperature TJ Rising 155 °C
+    TJ(OFF-HYS) Thermal shutdown hysteresis 20 °C
+    www.ti.com
+    ---
+    tDGL(TS) Deglitch time, pack temperature fault detection TS fault detected to charger disable 50 ms
+    VDIS(TS) TS function disable threshold (BQ24072, BQ24073) TS unconnected VIN - 200mV V
+    THERMAL REGULATION
+    TJ(REG) Temperature regulation limit 125 °C
+    TJ(OFF) Thermal shutdown temperature TJ Rising 155 °C
+    TJ(OFF-HYS) Thermal shutdown hysteresis 20 °C
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    ---
+
+========== p14 ==========
+    VOL Output LOW voltage ISINK = 5 mA 0.4 V
+    (1) These numbers set trip points of 0°C and 50°C while charging, with 3°C hysteresis on the trip points, with a Vishay Type 2 curve NTC
+    with an R25 of 10 kΩ.
+    8.6 Typical Characteristics
+    VIN = 6 V, EN1=1, EN2=0, BQ24073 application circuit, TA = 25°C, unless otherwise noted.
+    600
+    400
+    100
+    ---
+
+========== p18 ==========
+    VRCH
+    INTC
+    VHOT
+    VCOLD
+    tDGL(NO-IN)
+    t DGL(PGOOD)
+    tBLK(OVP)
+    VBAT + VIN-DT
+    ---
+    PGOOD
+    TS
+    TD
+    (BQ24072,
+    BQ24073)
+    OUT
+    BAT
+    ISET
+    ---
+    Reset timers
+    t DGL(TS )
+    Timers disabled
+    IBIAS - ITERM
+    ITERM
+    BQ24074
+    VOUT
+    Supplement
+    ---
+    40mV
+    VDIS(TS)
+    ~3V
+    tDGL2(LOWV)
+    225mV
+    (’72, ’73, ’75)
+    2.25V
+    Fastcharge
+    ---
+
+========== p27 ==========
+    the current falls below I TERM and does not go low until the input power or CE are toggled. When termination is
+    disabled, the pre-charge and fast-charge safety timers are also disabled. Battery pack temperature sensing (TS
+    pin functionality) is disabled if the TD pin is high and the TS pin is unconnected or pulled up to VIN.
+    9.3.5.4 Battery Detection and Recharge
+    The BQ2407x automatically detects if a battery is connected or removed. Once a charge cycle is complete, the
+    battery voltage is monitored. When the battery voltage falls below V RCH, the battery detection routine is run.
+    During battery detection, current (I BAT(DET)) is pulled from the battery for a duration t DET to see if the voltage
+    on BAT falls below V LOWV. If not, charging begins. If it does, then it indicates that the battery is missing or the
+    ---
+    disabled, the pre-charge and fast-charge safety timers are also disabled. Battery pack temperature sensing (TS
+    pin functionality) is disabled if the TD pin is high and the TS pin is unconnected or pulled up to VIN.
+    9.3.5.4 Battery Detection and Recharge
+    The BQ2407x automatically detects if a battery is connected or removed. Once a charge cycle is complete, the
+    battery voltage is monitored. When the battery voltage falls below V RCH, the battery detection routine is run.
+    During battery detection, current (I BAT(DET)) is pulled from the battery for a duration t DET to see if the voltage
+    on BAT falls below V LOWV. If not, charging begins. If it does, then it indicates that the battery is missing or the
+    protector is open. Next, the precharge current is applied for tDET to close the protector if possible. If VBAT < VRCH,
+    ---
+
+========== p29 ==========
+    9.3.6 Battery Pack Temperature Monitoring
+    The BQ2407x features an external battery pack temperature monitoring input. The TS input connects to the
+    NTC thermistor in the battery pack to monitor battery temperature and prevent dangerous over-temperature
+    conditions. During charging, I NTC is sourced to TS and the voltage at TS is continuously monitored. If, at any
+    time, the voltage at TS is outside of the operating range (V COLD to V HOT), charging is suspended. The timers
+    maintain their values but suspend counting. When the voltage measured at TS returns to within the operation
+    window, charging is resumed and the timers continue counting. When charging is suspended due to a battery
+    pack temperature fault, the CHG pin remains low and continues to indicate charging.
+    ---
+    The BQ2407x features an external battery pack temperature monitoring input. The TS input connects to the
+    NTC thermistor in the battery pack to monitor battery temperature and prevent dangerous over-temperature
+    conditions. During charging, I NTC is sourced to TS and the voltage at TS is continuously monitored. If, at any
+    time, the voltage at TS is outside of the operating range (V COLD to V HOT), charging is suspended. The timers
+    maintain their values but suspend counting. When the voltage measured at TS returns to within the operation
+    window, charging is resumed and the timers continue counting. When charging is suspended due to a battery
+    pack temperature fault, the CHG pin remains low and continues to indicate charging.
+    For the BQ24072 and BQ24073, battery pack temperature sensing is disabled when termination is disabled (TD
+    ---
+    NTC thermistor in the battery pack to monitor battery temperature and prevent dangerous over-temperature
+    conditions. During charging, I NTC is sourced to TS and the voltage at TS is continuously monitored. If, at any
+    time, the voltage at TS is outside of the operating range (V COLD to V HOT), charging is suspended. The timers
+    maintain their values but suspend counting. When the voltage measured at TS returns to within the operation
+    window, charging is resumed and the timers continue counting. When charging is suspended due to a battery
+    pack temperature fault, the CHG pin remains low and continues to indicate charging.
+    For the BQ24072 and BQ24073, battery pack temperature sensing is disabled when termination is disabled (TD
+    = High) and the voltage at TS is greater than V DIS(TS). For applications that do not require the TS monitoring
+    ---
+    conditions. During charging, I NTC is sourced to TS and the voltage at TS is continuously monitored. If, at any
+    time, the voltage at TS is outside of the operating range (V COLD to V HOT), charging is suspended. The timers
+    maintain their values but suspend counting. When the voltage measured at TS returns to within the operation
+    window, charging is resumed and the timers continue counting. When charging is suspended due to a battery
+    pack temperature fault, the CHG pin remains low and continues to indicate charging.
+    For the BQ24072 and BQ24073, battery pack temperature sensing is disabled when termination is disabled (TD
+    = High) and the voltage at TS is greater than V DIS(TS). For applications that do not require the TS monitoring
+    function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain charging.
+    ---
+    time, the voltage at TS is outside of the operating range (V COLD to V HOT), charging is suspended. The timers
+    maintain their values but suspend counting. When the voltage measured at TS returns to within the operation
+    window, charging is resumed and the timers continue counting. When charging is suspended due to a battery
+    pack temperature fault, the CHG pin remains low and continues to indicate charging.
+    For the BQ24072 and BQ24073, battery pack temperature sensing is disabled when termination is disabled (TD
+    = High) and the voltage at TS is greater than V DIS(TS). For applications that do not require the TS monitoring
+    function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain charging.
+    www.ti.com
+    ---
+    For the BQ24072 and BQ24073, battery pack temperature sensing is disabled when termination is disabled (TD
+    = High) and the voltage at TS is greater than V DIS(TS). For applications that do not require the TS monitoring
+    function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain charging.
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 29
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+    ---
+    = High) and the voltage at TS is greater than V DIS(TS). For applications that do not require the TS monitoring
+    function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain charging.
+    www.ti.com
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021
+    Copyright © 2021 Texas Instruments Incorporated Submit Document Feedback 29
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+    ---
+
+========== p30 ==========
+    The allowed temperature range for 103AT-2 type thermistor is 0°C to 50°C. However, the user may increase
+    the range by adding two external resistors. See Figure 9-9 for the circuit details. The values for Rs and Rp are
+    calculated using the following equations:
+    2 H C
+    TH TC TH TC TH TC TC TH
+    H C TS
+    V V(R + R ) (R +R ) 4 R R + (R R ) (V V ) I
+    ---
+    TH TC TH TC TH TC TC TH
+    H C TS
+    V V(R + R ) (R +R ) 4 R R + (R R ) (V V ) I
+    Rs = 2
+    /c230 /c246/c236 /c252/c180/c45 /c177 /c45 /c180 /c180 /c45 /c231 /c247/c237 /c253/c231 /c247/c45 /c180/c238 /c254/c232 /c248
+    (8)
+    /c40 /c41
+    /c40 /c41
+    ---
+    H TH S
+    TS TH S H
+    V R RRp
+    I R R V
+    /c180 /c43/c61
+    /c180 /c43 /c45
+    (9)
+    where
+    ---
+    where
+    * RTH: Thermistor Hot Trip Value found in thermistor data sheet
+    * RTC: Thermistor Cold Trip Value found in thermistor data sheet
+    * VH: IC's Hot Trip Threshold = 0.3 V nominal
+    * VC: IC's Cold Trip Threshold = 2.1 V nominal
+    * ITS: IC's Output Current Bias = 75 µA nominal
+    * NTC Thermsitor Semitec 103AT-4
+    Rs and Rp 1% values were chosen closest to calculated values in Table 9-3.
+    ---
+    * RTH: Thermistor Hot Trip Value found in thermistor data sheet
+    * RTC: Thermistor Cold Trip Value found in thermistor data sheet
+    * VH: IC's Hot Trip Threshold = 0.3 V nominal
+    * VC: IC's Cold Trip Threshold = 2.1 V nominal
+    * ITS: IC's Output Current Bias = 75 µA nominal
+    * NTC Thermsitor Semitec 103AT-4
+    Rs and Rp 1% values were chosen closest to calculated values in Table 9-3.
+    Table 9-3. Calculated Values
+    ---
+    * ITS: IC's Output Current Bias = 75 µA nominal
+    * NTC Thermsitor Semitec 103AT-4
+    Rs and Rp 1% values were chosen closest to calculated values in Table 9-3.
+    Table 9-3. Calculated Values
+    COLD TEMP RESISTANCE AND
+    TRIP THRESHOLD; Ω (°C)
+    HOT TEMP RESISTANCE AND
+    TRIP THRESHOLD; Ω (°C)
+    ---
+    33890 (-5) 3021 (60) 1100 140000
+    RHOT and RCOLD are the thermistor resistance at the desired hot and cold temperatures, respectively. The
+    temperature window cannot be tightened more than using only the thermistor connected to TS, it can only be
+    extended.
+    Figure 9-9. Extended TS Pin Thresholds
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021 www.ti.com
+    30 Submit Document Feedback Copyright © 2021 Texas Instruments Incorporated
+    ---
+    RHOT and RCOLD are the thermistor resistance at the desired hot and cold temperatures, respectively. The
+    temperature window cannot be tightened more than using only the thermistor connected to TS, it can only be
+    extended.
+    Figure 9-9. Extended TS Pin Thresholds
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021 www.ti.com
+    30 Submit Document Feedback Copyright © 2021 Texas Instruments Incorporated
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+    ---
+    extended.
+    Figure 9-9. Extended TS Pin Thresholds
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021 www.ti.com
+    30 Submit Document Feedback Copyright © 2021 Texas Instruments Incorporated
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+    ---
+
+========== p32 ==========
+    VHOT
+    VTS
+    t□<□tDGL(TS) tDGL(TS)
+    Suspend
+    Charging Resume
+    Charging
+    Figure 9-14. Battery Pack Temperature Sensing - TS Pin. Battery Temperature Increasing
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    ---
+    VTS
+    t□<□tDGL(TS) tDGL(TS)
+    Suspend
+    Charging Resume
+    Charging
+    Figure 9-14. Battery Pack Temperature Sensing - TS Pin. Battery Temperature Increasing
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021 www.ti.com
+    ---
+    Charging
+    Figure 9-14. Battery Pack Temperature Sensing - TS Pin. Battery Temperature Increasing
+    BQ24072, BQ24073, BQ24074, BQ24075, BQ24079
+    SLUS810N - SEPTEMBER 2008 - REVISED OCTOBER 2021 www.ti.com
+    32 Submit Document Feedback Copyright © 2021 Texas Instruments Incorporated
+    Product Folder Links: BQ24072 BQ24073 BQ24074 BQ24075 BQ24079
+    ---
+
+========== p33 ==========
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK-
+    SYSTEM
+    ISET
+    PGOOD
+    ---
+
+========== p34 ==========
+    * Safety timer duration, Fast-Charge = 6.25 hours; TMR - pin 14
+    * TS - Battery Temperature Sense = 10 kΩ NTC (103AT-2)
+    10.2.2 Detailed Design Procedure
+    10.2.2.1 BQ2407x Charger Design Example
+    See Figure 10-1 to Figure 10-13 for Schematics of the Design Example.
+    10.2.2.1.1 Termination Disable (TD) (BQ24072, BQ24073 only)
+    Connect TD high to disable termination. Connect TD low to enable termination.
+    10.2.2.1.2 System ON/OFF (SYSOFF) (BQ24075 or BQ24079 only)
+    ---
+
+========== p35 ==========
+    10.2.2.3 TS Function
+    Use a 10-k Ω NTC thermistor in the battery pack (103AT-2). For applications that do not require the TS
+    monitoring function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain
+    charging.
+    10.2.2.4 CHG and PGOOD
+    LED Status: Connect a 1.5-k Ω resistor in series with a LED between OUT and CHG to indicate charging status.
+    Connect a 1.5-kΩ resistor in series with a LED between OUT and PGOOD to indicate when a valid input source
+    ---
+    10.2.2.3 TS Function
+    Use a 10-k Ω NTC thermistor in the battery pack (103AT-2). For applications that do not require the TS
+    monitoring function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain
+    charging.
+    10.2.2.4 CHG and PGOOD
+    LED Status: Connect a 1.5-k Ω resistor in series with a LED between OUT and CHG to indicate charging status.
+    Connect a 1.5-kΩ resistor in series with a LED between OUT and PGOOD to indicate when a valid input source
+    is connected.
+    ---
+    Use a 10-k Ω NTC thermistor in the battery pack (103AT-2). For applications that do not require the TS
+    monitoring function, connect a 10-kΩ resistor from TS to VSS to set the TS voltage at a valid level and maintain
+    charging.
+    10.2.2.4 CHG and PGOOD
+    LED Status: Connect a 1.5-k Ω resistor in series with a LED between OUT and CHG to indicate charging status.
+    Connect a 1.5-kΩ resistor in series with a LED between OUT and PGOOD to indicate when a valid input source
+    is connected.
+    Processor Monitoring Status: Connect a pullup resistor (on the order of 100 k Ω) between the power rail of the
+    ---
+
+========== p38 ==========
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK-
+    C1
+    1 F/c109
+    C3
+    ---
+    BAT
+    TS
+    ISET
+    PGOOD
+    CHG
+    ITERM
+    ILM
+    R1
+    ---
+    EN2
+    TS
+    TEMP
+    PACK+
+    PACK- R3
+    1.13 k/c87
+    R4
+    1.5 k/c87
+    ---
