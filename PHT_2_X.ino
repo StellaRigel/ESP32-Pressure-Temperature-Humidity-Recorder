@@ -55,7 +55,25 @@
 //      可能掉电/影响刷机；其余设备正常识别并切换。
 //   用法：默认 0（安全）。启用请改 1 后编译。
 //   依据：硬件核对清单 第五节清单 3（待实装）。
-#define USB_ENUM_DETECT 0
+// ===== USB 枚举检测（**已实装** 2026-10-03）=====
+//   目的：区分"插在 USB 主机（电脑）"还是"插在充电器"，据此选 BQ24074 输入限流档位。
+//   原理：USB 主机每 1ms 发一个 **SOF 帧**；ESP32-S3 的 USB-Serial-JTAG 控制器
+//         维护一个 **SOF 帧号计数器**（自增，11 位，绕回 2048）→ 计数在变 = 对端是活的主机。
+//   ⛔ **不用 `(bool)Serial`** —— 实测它反映的是主机的 DTR，不是数据流，充电器上可能是 false。
+//   寄存器（esp32s3-libs 3.3.9-cn 头文件核对）：
+//     DR_REG_USB_SERIAL_JTAG_BASE = 0x60038000
+//     +0x24 USB_SERIAL_JTAG_FRAM_NUM_REG（低 11 位 = SOF_FRAME_INDEX）
+#define USB_JTAG_BASE        0x60038000UL
+#define USB_JTAG_FRAM_NUM    (USB_JTAG_BASE + 0x24UL)
+#define USB_JTAG_INT_CLR     (USB_JTAG_BASE + 0x14UL)
+#define USB_SOF_FRAME_MASK   0x7FFUL          // 帧号 11 位
+
+//   判定窗口：上电后这段时间内观察帧号变化；取 3 次、每次间隔 220ms
+#define ENUM_WINDOW_MS  3000UL
+
+#define ENUM_UNKNOWN 0
+#define ENUM_IS_HOST 1
+#define ENUM_IS_CHARGER 2
 
 // ===== 【阶段1·安全启动】2026-10-03 =====
 //   故障：插着 USB 拔掉电池 → 设备反复 BROWNOUT 起不来。
@@ -1371,38 +1389,117 @@ bool isExternallyPowered() { return digitalRead(PIN_PGOOD) == LOW; }
 // 说明：本层只提供「底层原语」。固定/移动模式切换、80% 停充策略后续在此之上实现，
 //       调用方只需 chargeSetCurrent() / chargeSetEnabled()，不直接碰 IO 电平。
 // 充电使能与「充电中」状态区别：CE 是“允许/禁止充电”，CHG 是“当前是否在充电”。
+// ===== 冷启动判据（2026-10-03）=====
+//   设备封装后电池永不拔除 → **冷启动只可能是"电池没电"**；
+//   另一种是用户拨 EN 开关（此时电池通常有电）。
+//   故按 VBAT 分流：< 3.6V 视为冷启动（优先起系统），≥ 3.6V 走常规快启动。
+//   用户定 3.6V：取得太保守会让"拨 EN 开机"的体验变差。
+#define PWR_COLD_START_V  3.6f
+
+// ===== 实测结论：USB500 下能否充电？（2026-10-03 实验）=====
+//   实验：USB500(500mA) + 允许充电，插电脑 USB 与充电器各测 1 分钟
+//   结果：battCurrent ≈ **-1.0mA**（≈0，无净电流进电池），设备稳定不复位
+//   解释：BQ24074 的 DPPM 工作正常（优先保系统、不塌陷），但**系统自身就把 500mA 吃满了**，
+//         留给电池的 ≈0 → 若仍允许充电，会出现"CHG 灯亮着、却充不进去"的假象。
+//   ⇒ 故：**USB 主机（500mA 档）下禁止充电**；充电器（ISET 档，约 1.3A）才允许充。
+//   ⚠️ 若将来换更大电流的 USB 口或降低系统功耗，把此常量改为 true 重测。
+const bool usbChargingViable = false;
+
+// ===== USB 枚举状态（由 serviceUsbEnum 判定）=====
+uint8_t usbEnumState   = ENUM_UNKNOWN;   // ENUM_UNKNOWN / ENUM_IS_HOST / ENUM_IS_CHARGER
+bool    usbAllowCharge = false;          // 是否允许充电（枚举成功才允许）
+
+// 读 USB-Serial-JTAG 的 SOF 帧号（低 11 位）
+static inline uint32_t usbReadSofFrame() {
+  return (*(volatile uint32_t*)USB_JTAG_FRAM_NUM) & USB_SOF_FRAME_MASK;
+}
+
+// ---- USB 枚举检测：观察 SOF 帧号是否在变化 ----
+//   返回 true = 对端是 USB 主机（帧号在动）；false = 充电器/无主机（帧号静止）
+bool usbDetectHost(uint32_t windowMs = ENUM_WINDOW_MS) {
+  volatile uint32_t* clr = (volatile uint32_t*)USB_JTAG_INT_CLR;
+  *clr = 0xFFFFFFFFUL;                       // 清掉历史 SOF 中断，从干净状态开始
+  delay(5);
+
+  uint32_t f0 = usbReadSofFrame();
+  uint32_t start = millis();
+  while (millis() - start < windowMs) {
+    delay(200);
+    if (usbReadSofFrame() != f0) return true;   // 只要动过一次就判定为主机
+  }
+  return false;
+}
+
+// ---- 启动后调用一次：判定电源类型并据此设定 BQ24074 档位 ----
+void serviceUsbEnum() {
+  if (usbEnumState != ENUM_UNKNOWN) return;      // 只判定一次
+
+  bool ext = isExternallyPowered();
+  uint32_t a = usbReadSofFrame();
+  delay(250);
+  uint32_t b = usbReadSofFrame();
+  bool sofMoving = (a != b);
+
+  if (ext && sofMoving) {
+    // ===== USB 主机（电脑）=====
+    usbEnumState   = ENUM_IS_HOST;
+    usbAllowCharge = usbChargingViable;           // 由实测决定（见 usbChargingViable）
+    // 保持 EN1=高 / EN2=低 = USB500（已在 chargeInit 设好）
+    webLog("🔎 USB 枚举：**主机**（SOF 帧号 %lu→%lu 在动）→ 保持 USB500(500mA)，%s\n",
+           (unsigned long)a, (unsigned long)b, usbAllowCharge ? "允许充电" : "**禁止充电**");
+  } else if (ext) {
+    // ===== 充电器（无 SOF）=====
+    usbEnumState   = ENUM_IS_CHARGER;
+    usbAllowCharge = true;
+    pinMode(PIN_EN1, OUTPUT); pinMode(PIN_EN2, OUTPUT);
+    digitalWrite(PIN_EN1, LOW);
+    digitalWrite(PIN_EN2, HIGH);                  // (EN1,EN2)=(0,1) = ISET 档（ILIM 电阻设定，约 1.3A）
+    digitalWrite(PIN_EN1, LOW); digitalWrite(PIN_EN2, HIGH);
+    webLog("🔎 USB 枚举：**充电器**（SOF 帧号 %lu 静止）→ 切 ISET 档(ILIM)，允许充电\n",
+           (unsigned long)b);
+  } else {
+    // ===== 纯电池（无外接电源）=====
+    usbEnumState   = ENUM_IS_CHARGER;             // 视作"非主机"，不涉及 EN1/EN2
+    usbAllowCharge = false;
+    webLogln("🔎 USB 枚举：无外接电源（纯电池）→ 不涉及 EN1/EN2");
+  }
+
+  if (usbAllowCharge) digitalWrite(PIN_CE, LOW);   // 放行充电
+  else                digitalWrite(PIN_CE, HIGH);  // 锁死禁充
+}
 void chargeInit() {
   // 上电安全默认。
   // ⚠️ 顺序很关键：必须先 pinMode(OUTPUT) 再 digitalWrite。
   //    实测（ESP32 core 3.3.11 / S3）：软复位（ESP.restart）后，
   //    「先 digitalWrite 再 pinMode」不会真正拉低引脚，引脚会保留上一次会话的电平——
-  //    曾观测到预置快充态重启后仍读到 IO18=1，对固定“必须慢充”是隐患。
+  //    曾观测到预置快充态重启后仍读到 IO18=1，对固定"必须慢充"是隐患。
   //    改为先设方向再写电平，并末尾复写一次兜底。
   pinMode(PIN_ISET, OUTPUT);
   pinMode(PIN_CE, OUTPUT);
   digitalWrite(PIN_ISET, LOW);   // MOS 关断 → 慢充档
 
-#if PWR_SAFE_START
-  // ★【阶段1】CE 拉高 = 禁止充电：把输入电流全部留给系统，不跟充电抢
-  digitalWrite(PIN_CE, HIGH);
-
-  // ★【阶段1】把 BQ24074 输入限流抬到 USB500(500mA)，**早于 WiFi 初始化**
-  //   手册真值表：(EN2,EN1)=(0,0)100mA / (0,1)500mA / (1,0)ISET档
-  //   ⚠️ 只抬 EN1、EN2 保持低 → 500mA 是 USB 规范安全值，
-  //      即使插在仅能出 500mA 的电脑口也不会过载（设计文档 435 行的意图）
+  // ---- BQ24074 输入限流：**必须先抬到 USB500，早于 WiFi 初始化** ----
+  //   手册真值表：(EN1,EN2)=(0,0)100mA / (1,0)USB500(500mA) / (0,1)ISET档(ILIM 电阻设定)
+  //   为什么必须早：ROM/固件早期与 WiFi 初始化都有电流峰值，
+  //   若等到枚举之后才抬，系统可能已经在枚举阶段掉压复位（实测教训）。
+  //   500mA 是 USB 规范安全值：即便插在仅能出 500mA 的电脑口也不会过载。
   pinMode(PIN_EN1, OUTPUT);
   pinMode(PIN_EN2, OUTPUT);
   digitalWrite(PIN_EN1, HIGH);
-  digitalWrite(PIN_EN2, LOW);
-  digitalWrite(PIN_EN1, HIGH);   // 兜底复写
+  digitalWrite(PIN_EN2, LOW);     // → USB500
+  digitalWrite(PIN_EN1, HIGH);    // 兜底复写
   digitalWrite(PIN_EN2, LOW);
 
-  webLogln("🔌 【安全启动】CE=高(禁充) | EN1=高 EN2=低 → BQ24074 输入限流 = USB500(500mA)");
+  // ---- 充电使能：启动期一律**先禁充**（系统优先），由 serviceUsbEnum 事后放行 ----
+  //   理由：供电受限时充电会和系统抢同一份输入电流；系统起不来就没有后续可言。
+#if PWR_SAFE_START
+  digitalWrite(PIN_CE, HIGH);     // 禁止充电（安全默认）
+  webLogln("🔌 【安全启动】输入限流=USB500(500mA) | CE=高(禁充，待枚举后再定)");
 #else
-  digitalWrite(PIN_CE, LOW);     // CE 低 → 允许充电（老逻辑）
+  digitalWrite(PIN_CE, LOW);      // 老逻辑：允许充电
   webLogln("🔌 充电控制初始态：允许充电 | 输入限流 = 上电默认 (0,0)=USB100");
 #endif
-  digitalWrite(PIN_ISET, LOW);   // 兜底复写
+  digitalWrite(PIN_ISET, LOW);    // 兜底复写
 
   // ===== TPS2117 PR1 上电安全默认（v2.2 新增）=====
   //   ⛔ **必须最先拉低**：PR1 低 → 选 VIN2(LDO 3.3V)；PR1 高 → 选 VIN1(电池直供)。
@@ -1537,7 +1634,7 @@ void servicePr1Interlock(const PowerState& p) {
 }
 
 void applyChargeStrategy(const PowerState& ps) {
-#if PWR_SAFE_START
+#if PWR_SAFE_START && !usbAllowCharge
   // ★【阶段1】安全启动模式：**绝不使能充电**（CE 恒高）。
   //   本阶段只验证"禁充 + USB500 能否让系统稳定启动"，充电策略暂不参与。
   digitalWrite(PIN_CE, HIGH);
@@ -2617,6 +2714,12 @@ String buildStatusJson(bool overBLE) {
              //   pr1Raw  = 引脚**实际回读电平**（比状态变量可信：能发现"写了但没生效"）
              //   pr1Safe = 是否处于安全态（仅在电压 ≤ 硬上限时才允许电池直供）
              ",\"pr1\":\"" + (pr1BatteryDirect ? "VIN1_BATTERY_DIRECT" : "VIN2_LDO") + "\"" +
+             // ---- USB 枚举结果（v2.2）----
+             ",\"usb\":" + String(usbEnumState == ENUM_IS_HOST ? "\"host\"" :
+                                  (usbEnumState == ENUM_IS_CHARGER ? "\"charger\"" : "\"unknown\"")) +
+             ",\"usbSof\":" + String(usbReadSofFrame()) +
+             ",\"allowCharge\":" + (usbAllowCharge ? "true" : "false") +
+             ",\"chargingViable\":" + (usbChargingViable ? "true" : "false") +
              ",\"pr1Raw\":" + String(digitalRead(PIN_PR1)) +
              ",\"pr1Safe\":" + ((!pr1BatteryDirect || ps.battVolt <= PR1_HARD_MAX) ? "true" : "false") +
              ",\"pr1Thr\":{\"on\":" + String(PR1_ON_V, 2) +
@@ -4710,6 +4813,11 @@ void setup() {
   pinMode(PIN_WIFI_BTN, INPUT_PULLUP);      // 实体 WiFi 开关；未焊按钮时上拉 = 不触发，安全
   curWireless = WL_WIFI;                    // 上面已经起过 WiFi/AP
   updateWireless();                         // 若判定该用蓝牙，这里会关 WiFi、开蓝牙
+
+  // ===== USB 枚举：判定对端是"电脑主机"还是"充电器"，据此定 EN1/EN2 与充电使能 =====
+  //   放在此处（服务器已起、webLog 可用）——它是阻塞的（约 3s 观察 SOF 帧号），
+  //   但此时系统已完全启动、电源已稳，不怕这点延迟。
+  serviceUsbEnum();
 }
 
 // ========== loop ==========
