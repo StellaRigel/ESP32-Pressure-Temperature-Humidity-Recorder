@@ -185,3 +185,70 @@ Sakura Frp 服务端 ──隧道──► frpc 客户端（K3B 上）
 - [ ] 按 IP 限速（防暴力试探）
 
 > ⚠️ **SSH 绝不挂到穿透上** —— 运维通道走 Tailscale（不暴露端口）。
+
+## 八、API Token 加固（2026-10-03 完成）
+
+### 8.1 设计
+
+| 机制 | 说明 |
+|---|---|
+| **写入鉴权** | `POST /api/v1/samples` 必须带 `X-PHT-Token` 请求头 |
+| **开关** | `PHT_API_TOKEN` 为空 = 不校验（纯局域网调试用） |
+| **比较方式** | `hmac.compare_digest` 定长比较，避免时序侧信道 |
+| **按 IP 限速** | 滑动窗口；默认 60 秒内 120 次，超出返回 **429 + Retry-After** |
+| **只读接口** | `/api/v1/health` `/api/v1/devices` `/api/v1/series` `/` **免 token**（方便看网页） |
+| **反代兼容** | 限速取 IP 时优先信任 `X-Forwarded-For` / `X-Real-IP`（穿透场景 client.host 会是 127.0.0.1） |
+
+### 8.2 部署方式
+
+```bash
+# 生成 256 位随机 token
+openssl rand -hex 32 > /tmp/tok
+
+# ⚠️ 必须写成 KEY=value 格式（systemd EnvironmentFile 要求）
+printf 'PHT_API_TOKEN=%s\n' "$(cat /tmp/tok)" > /etc/pht-server.env
+chmod 600 /etc/pht-server.env
+chown root:root /etc/pht-server.env
+rm -f /tmp/tok
+```
+
+systemd 单元里加载：
+```
+EnvironmentFile=/etc/pht-server.env
+```
+
+重启：`systemctl daemon-reload && systemctl restart pht-server`
+
+**❌ 踩坑**：第一次写成裸 token（没有 `PHT_API_TOKEN=` 前缀），
+systemd **静默忽略**整个文件 → 进程环境里没有该变量 → **鉴权形同虚设**（无 token 也返回 200）。
+诊断方法：
+```bash
+PID=$(systemctl show -p MainPID --value pht-server)
+tr '\0' '\n' < /proc/$PID/environ | grep PHT_
+```
+
+### 8.3 验证结果（2026-10-03）
+
+| 用例 | 结果 |
+|---|---|
+| 无 token POST | **401** `{"detail":"token 无效"}` ✅ |
+| 错误 token POST | **401** ✅ |
+| 正确 token POST | **200** `{"ok":true,"accepted":1}` ✅ |
+| 只读接口（health / 网页 / devices） | **200**（免 token）✅ |
+| 限速：连发 130 次 | **117×200 + 13×429**，`Retry-After: 46` ✅ |
+
+### 8.4 ESP32 侧对接
+
+```c
+// 推送时必须带这个头
+http.addHeader("X-PHT-Token", PHT_API_TOKEN);   // 与服务器 /etc/pht-server.env 一致
+```
+
+> 🔐 **token 值只存在服务器 `/etc/pht-server.env`（600 root）与 ESP32 固件里，
+> 不写进代码仓库、不贴进任何日志。**
+
+### 8.5 剩余（穿透前）
+
+- [x] 写入鉴权 + 限速 ✅
+- [ ] 穿透（Sakura Frp）—— **局域网跑通后再装**
+- [ ] ESP32 侧推送功能实现
