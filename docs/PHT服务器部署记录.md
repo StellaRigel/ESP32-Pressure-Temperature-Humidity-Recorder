@@ -11,17 +11,22 @@
 | 内核 | `7.2.5-edge-rockchip64`（aarch64） |
 | 根设备 | `/dev/mmcblk1p1`（eMMC，14.7G） |
 | 主机名 | `pht-server` |
-| 静态 IP | **`192.168.1.20/24`**，网关 `192.168.1.1`，DNS `223.5.5.5` |
+| 静态 IP | **`192.168.1.100/24`**，网关 `192.168.1.1`，DNS `223.5.5.5` |
 | 时区 | `Asia/Shanghai` |
 | 内存 | 1.9G + 984M zram swap |
 | 串口 | `COM3`（CH343，**1500000 波特率**） |
 
 **⚠️ 地址规划（重要）**：
 ```
-192.168.1.99  = 【PHT 气象站 ESP32】—— 绝不能让服务器占用！
-192.168.1.20  = 【K3B 服务器】
-192.168.1.42  = PC
+192.168.1.99   = 【PHT 气象站 ESP32】—— 绝不能让服务器占用！
+192.168.1.100  = 【K3B 服务器】
+192.168.1.42   = PC
 ```
+
+**为什么选 `.100` 而不是 `.20`**：
+`.20` 落在**家用路由器 DHCP 池的常见区间**（很多默认从 `.2` 或 `.10` 起分配几十上百个），
+存在被路由器分配出去造成冲突的风险。`.100` 位置更高、更不容易撞上。
+实测该网段在用地址为 `.1`（网关）`.2`（DNS）`.33` `.44` 等，`.100` 确认空闲。
 
 ## 二、eMMC 安装
 
@@ -46,8 +51,8 @@ chown -R pht:pht /opt/pht
 
 # 2) 上传代码（scp）
 scp app.py config.py db.py ingest.py mqtt_ingest.py requirements.txt \
-    README.md analyze_battcal.py root@192.168.1.20:/opt/pht/server/
-scp -r static deploy root@192.168.1.20:/opt/pht/server/
+    README.md analyze_battcal.py root@192.168.1.100:/opt/pht/server/
+scp -r static deploy root@192.168.1.100:/opt/pht/server/
 
 # 3) 依赖（需先装 python3.13-venv）
 apt-get install -y python3.13-venv python3-pip
@@ -149,3 +154,34 @@ dmesg: mmc0 SDIO 控制器 400k→300k→200k→100k 后放弃（设备未应答
 - [ ] 内网穿透选型（倾向 Cloudflare Tunnel —— 免费版 HTTP 够用）
 - [ ] ESP32 侧推送功能（POST `/api/v1/samples` + `X-PHT-Token` + 断网补传）
 - [ ] SD 卡还给 ESP32（需重新烧录气象站固件用的归档卡）
+
+## 七、内网穿透（方案已定，暂不安装）
+
+**选定服务**：**Sakura Frp**（樱花frp）。
+
+**决策时间**：2026-10-03
+
+**执行顺序**：**先把局域网跑通，再折腾穿透** —— 不着急装。
+
+**选中理由**：
+- 国内节点，延迟与可达性优于境外服务
+- 支持 TCP/HTTP，可拿固定域名
+- 免费额度对本项目够用（每样本 JSON ≈ 50 B，30 秒一条 → 约 4.5 MB/月）
+
+**架构（不变）**：
+```
+ESP32（任意网络）
+   │  POST http://<穿透地址>/api/v1/samples
+   ▼
+Sakura Frp 服务端 ──隧道──► frpc 客户端（K3B 上）
+   ▼
+127.0.0.1:8080 → FastAPI ingest() 入库
+```
+
+**服务器代码零改动** —— 局域网与穿透走同一个 `/api/v1/samples`。
+
+**穿透前必须完成**（见第六节待办）：
+- [ ] **API Token 加固**（`config.py` 加 `PHT_API_TOKEN`，`app.py` 校验 `X-PHT-Token`）
+- [ ] 按 IP 限速（防暴力试探）
+
+> ⚠️ **SSH 绝不挂到穿透上** —— 运维通道走 Tailscale（不暴露端口）。
