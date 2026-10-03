@@ -5333,7 +5333,7 @@ uint32_t calFullHeldMs() { return calFullStartMs ? (uint32_t)(millis() - calFull
 //     （表单调递增、且 5% 一档，结果可靠）。
 //   ⚠️ 必须用 calTableDry 挡住**干跑表**：干跑表会落盘且 calTableOk=true，拿它算阈值是错的。
 //   ⚠️ 余量只加在深睡档：那一档是"保命线"，要提前于 LDO 崩溃点触发；停采/存档本身就在它上面。
-//   ⚠️ 合理性检查（防脏表）：三档必须单调递减(存档 > 停采 > 深睡) 且 深睡 > CAL_FLOOR_V(3.0V)；
+//   ⚠️ 合理性检查（防脏表）：三档必须单调递减(存档 > 停采 > 深睡) 且 深睡 > CAL_FLOOR_V；
 //      不满足就整体回落到回落值并在日志里报出来。
 void updateBattThresholds() {
   battArchiveV = BATT_ARCHIVE_SD_DEF;      // 先回落到默认（无表/表不合格时就用它）
@@ -5363,7 +5363,7 @@ void updateBattThresholds() {
     return;
   }
   // 深睡档：表 5% 点 − 余量，但**不得低于硬底线 + 50mV**
-  //   注：本机表的 0% 点常**略低于** CAL_FLOOR_V（标定是被硬底线收工的，例如 2.969V < 3.0V），
+  //   注：本机表的 0% 点**可能略低于** CAL_FLOOR_V（标定是被硬底线收工的；旧表是 2.969V < 当时的 3.0V。2026-10-03 起底线改 3.20V），
   //       那正是实测到的真实底线，**不构成"表不可信"** → 这里只夹紧深睡档，不整表否定。
   float sleepRaw = v5 - BATT_SLEEP_MARGIN_V;
   float sleepMin = CAL_FLOOR_V + 0.05f;
