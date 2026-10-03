@@ -530,6 +530,7 @@ void _fallbackToRtcTime();
 bool syncTimeFromNTPBlocking(unsigned long maxMs);
 void ntpStart();
 void serviceNtpSync();
+void serviceNtpDailyCheck();
 bool wifiPickBest(bool requireInRange);
 // 只读数据的 JSON builder（HTTP 与 BLE 共用，定义在文件后半部）
 String buildStatusJson(bool overBLE);
@@ -555,7 +556,14 @@ time_t   nextSampleTime   = 0;      // 下一个采样点的墙上时间（采�
 //   策略：**只在「插电 + WiFi 已连 + 距上次 NTP 成功 ≥ 3 天」时**才试一次，且每次开机最多试一次。
 //   ⛔ 绝不出现"电池供电还去连 WiFi 同步 NTP"的逻辑（用户明确要求）。
 time_t   ntpLastOkAt      = 0;      // 上次 NTP 成功的时间（0 = 从未成功过）
-bool     ntpTriedThisBoot = false;  // 本次开机会话是否已重试过（避免反复打断） // 【兜底】长按 IO9 强开热点模式：到此刻为止拒绝任何 STA 重连（0 = 正常）
+// NTP 定期重同步（2026-10-03 改）：**每日 02:00 检查一次**，超过 NTP_RESYNC_DAYS 天没成功就同步。
+//   理由：RTC(DS3231) 与片上时钟都会漂；本设备理想环境下**一年都可能不重启**，
+//         只靠"开机时同步一次"会让时间越走越歪。
+//   原 ntpTriedThisBoot（每次开机只重试一次）已由每日定时取代。
+int      ntpDailyLastDay  = -1;      // 上次做每日检查的"日"（防止同日重复）
+bool     ntpDailyPending  = false;   // RTC 掉电且当前无网 → 挂起，等有网再补一次
+const long NTP_RESYNC_DAYS = 3L;     // 超过这么多天没成功 → 重新同步
+// 【兜底】长按 IO9 强开热点模式：到此刻为止拒绝任何 STA 重连（0 = 正常）
 int      wlForce = 0;               // 联调/调试：0=自动 1=强制WiFi 2=强制蓝牙（/wireless?force=）
 unsigned long wlForceUntil = 0;     // 强制到期时刻（自愈：3 分钟后自动回到场景判定，避免把设备锁在蓝牙）
 unsigned long lastWirelessCheck = 0;
@@ -1319,8 +1327,12 @@ float battSleepV   = BATT_DEEP_SLEEP_DEF;  // 低于此电压：进入深睡保�
 const uint32_t CAL_LOAD_MS      = 9UL * 60UL * 1000UL;   // 加载段（满载耗电）
 const uint32_t CAL_LOAD_LOW_MS  = 60UL * 1000UL;         // 低压段加载（加密采样）
 const uint32_t CAL_REST_MS      = 60UL * 1000UL;         // 静置段（静置采样）
-const float    CAL_LOW_FROM_V   = 3.50f;                 // 低于此电压 → 用低压段时长
-const float    CAL_FLOOR_V      = 3.00f;                 // 硬底线：低于此电压立即收工
+const float    CAL_LOW_FROM_V   = 3.60f;                 // 低于此电压 → 用低压段时长（3.50→3.60：更早转短加载段，减少下探）
+// ⚠️ 2026-10-03 用户裁定：3.00V → **3.20V**。
+//   原因：3.00V 太贴地 —— 放电负载下电压还会下探，容易把电池压到**保护板切断**，
+//         下次开机体验极差（实测：校准把电池放到 0.474V，设备"像坏了"）。
+//   留 0.2V 余量后，校准结束时电池仍有可观的剩余电量。
+const float    CAL_FLOOR_V      = 3.20f;                 // 硬底线：低于此电压立即收工
 const uint32_t CAL_FULL_HOLD_MS = 5UL * 60UL * 1000UL;   // 充满判定：条件需持续
 const float    CAL_FULL_MIN_V   = 4.10f;                 // 充满判定：电压下限
 const uint8_t  CAL_DRY_CYCLES   = 6;                     // 干跑：跑够几轮就模拟掉电重启
@@ -1430,7 +1442,7 @@ bool isExternallyPowered() { return digitalRead(PIN_PGOOD) == LOW; }
 //   另一种是用户拨 EN 开关（此时电池通常有电）。
 //   故按 VBAT 分流：< 3.6V 视为冷启动（优先起系统），≥ 3.6V 走常规快启动。
 //   用户定 3.6V：取得太保守会让"拨 EN 开机"的体验变差。
-#define PWR_COLD_START_V  3.6f
+#define PWR_COLD_START_V  3.5f   // 用户裁定 3.6→3.5（读数时机改到空载后，实测空载 3.8V 与带载 3.49V 差异已消除）
 
 // ===== 实测结论：USB500 下能否充电？（2026-10-03 实验，已定论）=====
 //   【结论：**可以充，而且速度可观**】
@@ -2723,6 +2735,39 @@ void _fallbackToRtcTime() {
   }
 }
 
+// ===== NTP 每日 02:00 定期检查（loop 每圈调，几乎零开销）=====
+//   条件：插电 + WiFi 已连 + 当前时间已有效（否则没法判断"到 02:00 了吗"）。
+//   动作：跨过 02:00 当天做一次判定；距上次成功 >= NTP_RESYNC_DAYS 天 → 非阻塞同步。
+//   ⚠️ RTC 掉电且当时无网络 → 挂起（ntpDailyPending），一旦有网立刻补一次。
+void serviceNtpDailyCheck() {
+  // 时间有效性：若时间还没被设过（< 2021），先不动
+  time_t nowT = time(nullptr);
+  if (nowT < 1000000000) return;
+
+  struct tm tmv;
+  localtime_r(&nowT, &tmv);
+  int  today    = tmv.tm_yday;
+  bool atOrAfter2 = (tmv.tm_hour >= 2);
+
+  // 每日只在跨过 02:00 后检查一次
+  bool dueToday = atOrAfter2 && (ntpDailyLastDay != today);
+
+  // RTC 掉电且没网 → 挂起
+  if (rtcLostPower && WiFi.status() != WL_CONNECTED) { ntpDailyPending = true; return; }
+
+  if (!dueToday && !(ntpDailyPending && WiFi.status() == WL_CONNECTED)) return;
+
+  if (!isExternallyPowered()) return;      // 电池供电时绝不去连网校时（省电）
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  bool stale = (ntpLastOkAt == 0) || ((nowT - ntpLastOkAt) >= NTP_RESYNC_DAYS * 24L * 3600L);
+  if (!stale && !rtcLostPower && !ntpDailyPending) { ntpDailyLastDay = today; return; }
+
+  ntpDailyLastDay = today;
+  ntpDailyPending = false;
+  webLogln("🕐 每日 NTP 检查：距上次成功已超 %ld 天 → 发起同步（非阻塞）", NTP_RESYNC_DAYS);
+  ntpStart();
+}
 // loop 每圈调用：SNTP 有结果就落地（写 RTC、记时刻），超时就回退 RTC
 void serviceNtpSync() {
   if (!ntpPending) return;
@@ -5776,6 +5821,8 @@ void loop() {
   // 无线互斥状态机 + 实体 WiFi 按钮（每 2 秒看一次；插拔电源/切模式/按按钮都会触发切换）
   checkWifiButton();                          // 每圈都查（一次 digitalRead，极廉价）：原先 2 秒轮询会漏掉短按
   serviceChargeTemp();                        // V2.1.1-a：断电即复位临时慢充（常态立即返回，零开销）
+  serviceNtpSync();                           // NTP 非阻塞落地（写 RTC / 记时刻 / 超时回退）
+  serviceNtpDailyCheck();                     // NTP 每日 02:00 定期重同步
   servicePr1Interlock(readPowerState());      // v2.2：TPS2117 PR1 电池直供互锁（低电才切；>3.6V 硬禁）
   serviceBattAnchor();                        // V2.1.1-b：满电锚点（满电保持 5min → 刷新表内 100% 点）
   serviceTopBar();                            // V2.1.1-c：顶栏快通道（拔插/充电/WiFi 变化 → 立刻反映）
@@ -5805,15 +5852,7 @@ void loop() {
       readAndLog();
       // ---- NTP 重试（见上方策略）：**只有插电 + WiFi 已连 + ≥3 天没成功** 才试；每次开机最多一次。
       //    ⛔ 不满足这三条就一个字都不做（尤其电池供电时绝不去连网校时）。
-      if (!ntpTriedThisBoot && isExternallyPowered() && WiFi.status() == WL_CONNECTED) {
-        time_t nowT = time(nullptr);
-        bool due = (ntpLastOkAt == 0) || ((nowT - ntpLastOkAt) >= 3L * 24L * 3600L);
-        if (due) {
-          ntpTriedThisBoot = true;
-          webLogln("🕐 距上次 NTP 成功已超 3 天（或从未成功）→ 借现成的 WiFi 重试一次");
-          ntpStart();                    // 非阻塞：结果由 loop 的 serviceNtpSync() 落地
-        }
-      }
+      serviceNtpDailyCheck();   // 每日 02:00 的定期重同步（取代原来的"每次开机只试一次"）
     } else {
       lightSleepService(nextSampleTime);   // 睡到采样点（守卫不满足时立即返回）
     }
@@ -5823,15 +5862,7 @@ void loop() {
       readAndLog();
       // ---- NTP 重试（见上方策略）：**只有插电 + WiFi 已连 + ≥3 天没成功** 才试；每次开机最多一次。
       //    ⛔ 不满足这三条就一个字都不做（尤其电池供电时绝不去连网校时）。
-      if (!ntpTriedThisBoot && isExternallyPowered() && WiFi.status() == WL_CONNECTED) {
-        time_t nowT = time(nullptr);
-        bool due = (ntpLastOkAt == 0) || ((nowT - ntpLastOkAt) >= 3L * 24L * 3600L);
-        if (due) {
-          ntpTriedThisBoot = true;
-          webLogln("🕐 距上次 NTP 成功已超 3 天（或从未成功）→ 借现成的 WiFi 重试一次");
-          ntpStart();                    // 非阻塞：结果由 loop 的 serviceNtpSync() 落地
-        }
-      }
+      serviceNtpDailyCheck();   // 每日 02:00 的定期重同步（取代原来的"每次开机只试一次"）
     }
   }
 
