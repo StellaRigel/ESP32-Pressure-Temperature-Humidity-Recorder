@@ -699,6 +699,7 @@ bool pingHost(const IPAddress& ip, uint32_t timeoutMs) {
 //                  ③ 配静态重连 ④ 都不行 → 退回 DHCP，并把「实际用的地址」报出来
 //   wifiStaticFallback = true 表示「本该静态但退回了 DHCP」——调用方据此在屏幕上标明 WiFi DHCP
 bool wifiStaticFallback = false;
+bool wifiRelearnProtect = false;   // true = 正在"重学后重试"，防止网关自检再次清参数互相打架
 // 连上 WiFi 后的横幅标题：正常「WiFi OK」；本该静态却退回 DHCP 时标「WiFi DHCP」
 //   （用户要求：退回 DHCP 必须在屏幕上标出来，不然不知道连在哪）
 const char* wifiOkTitle() { return wifiStaticFallback ? "WiFi DHCP" : "WiFi OK"; }
@@ -794,21 +795,73 @@ bool wifiConnectSaved(bool allowAP) {
     return true;                                        // 已以 DHCP 连着，直接用
   }
 
-  // ---------- ③ 配静态并重连 ----------
-  IPAddress sip(base[0], base[1], base[2], (uint8_t)chosen);
-  WiFi.config(sip, wifiCfg.gw, wifiCfg.mask, wifiCfg.dns);
-  WiFi.disconnect(false, false);
-  delay(200);
-  WiFi.begin(wifiCfg.ssid, wifiCfg.password);
-  if (waitConnected(20)) {
+  // ---------- ③ 配静态并重连（失败时**重学一次参数再试**）----------
+  //   ★ 2026-10-03 用户要求：网关/掩码/DNS 用缓存配静态失败 → 重学一次再配静态，
+  //     而不是像旧逻辑那样直接放弃静态、永久退回 DHCP。
+  const bool useIPSaved = wifiCfg.useIP;       // 失败时用来恢复静态偏好
+
+  auto applyStatic = [&](IPAddress useGw, IPAddress useMask, IPAddress useDns) -> bool {
+    IPAddress sip(base[0], base[1], base[2], (uint8_t)chosen);
+    WiFi.config(sip, useGw, useMask, useDns);
+    WiFi.disconnect(false, false);
+    delay(200);
+    WiFi.begin(wifiCfg.ssid, wifiCfg.password);
+    if (!waitConnected(20)) return false;
     wifiCfg.ipLast = (uint8_t)chosen; saveWiFiConfig();
     webLogln("✅ 静态 IP 生效: %s（DHCP 曾拿 %s）", sip.toString().c_str(), dhcpIp.c_str());
     diag(String("静态生效 ‘") + wifiCfg.ssid + "’ @ " + sip.toString());
-    return checkGatewayReachable(sip.toString(), dhcpIp);   // ★ 静态生效后再验一次网关（不通用再退回 DHCP）
+    return checkGatewayReachable(sip.toString(), dhcpIp);
+  };
+
+  if (applyStatic(wifiCfg.gw, wifiCfg.mask, wifiCfg.dns)) return true;
+
+  // ---------- ③b 重学兜底（仅当本来用的是"缓存的"参数时才有意义）----------
+  if (gwKnown) {
+    webLogln("🩹 用已学习的参数配静态失败 → 重学网络参数后再试一次（保留静态偏好）");
+    // 先把静态偏好恢复回来：checkGatewayReachable 的旧自愈分支可能把它改成 DHCP
+    bool wrote = false;
+    for (int i = 0; i < wifiCount; i++) {
+      if (strcmp(wifiList[i].ssid, wifiCfg.ssid) == 0) {
+        wifiList[i].useIP = true;
+        wifiList[i].gw = IPAddress(0, 0, 0, 0);
+        wifiList[i].mask = IPAddress(0, 0, 0, 0);
+        wifiList[i].dns = IPAddress(0, 0, 0, 0);
+        wrote = true; break;
+      }
+    }
+    if (wrote) saveWiFiConfig();
+    wifiCfg.useIP = true;
+    wifiCfg.gw = wifiCfg.mask = wifiCfg.dns = IPAddress(0, 0, 0, 0);
+
+    if (doLearn()) {
+      wifiRelearnProtect = true;               // 自检失败时不要再清参数（交给外层兜底）
+      IPAddress base2((uint32_t)wifiCfg.gw & (uint32_t)wifiCfg.mask);
+      for (int k = 0; k < 5; k++) {
+        int cand2 = start + k;
+        if (cand2 < 2 || cand2 > 254) break;
+        if (cand2 == gwLast) continue;
+        IPAddress cip2(base2[0], base2[1], base2[2], (uint8_t)cand2);
+        if (!pingHost(cip2, 600)) { chosen = cand2; break; }
+      }
+      if (chosen > 0) {
+        IPAddress base3((uint32_t)wifiCfg.gw & (uint32_t)wifiCfg.mask);
+        base = base3;
+        bool ok2 = applyStatic(wifiCfg.gw, wifiCfg.mask, wifiCfg.dns);
+        wifiRelearnProtect = false;
+        if (ok2) return true;
+      } else {
+        wifiRelearnProtect = false;
+      }
+    }
+    // 重学也没救回来 → 恢复用户原本的静态偏好，交给下面的 DHCP 兜底（本次会话）
+    wifiCfg.useIP = true;
+    for (int i = 0; i < wifiCount; i++)
+      if (strcmp(wifiList[i].ssid, wifiCfg.ssid) == 0) { wifiList[i].useIP = useIPSaved; break; }
+    saveWiFiConfig();
   }
 
   // ---------- ④ 静态连不上 → 退回 DHCP ----------
-  webLogln("⚠️ 静态 %s 连不上 → 退回 DHCP", sip.toString().c_str());
+  webLogln("⚠️ 静态地址（末段 .%d）连不上 → 退回 DHCP", (int)wifiCfg.ipLast);
   WiFi.config(INADDR_NONE, INADDR_NONE);
   WiFi.disconnect();
   delay(200);
@@ -853,7 +906,12 @@ bool checkGatewayReachable(const String& myIp, const String& dhcpPrevIp) {
     webLogln("⚠️ 网关 %s ping 不通（本机 %s）→ 判定参数错，走自愈", gw.toString().c_str(), myIp.c_str());
   }
 
-  // ---- 自愈：清掉学来的网络参数 + 退回 DHCP 重连 ----
+  // ---- 自愈分支 ----
+  //   ★ 2026-10-03：**重学保护期内直接失败返回**，由调用方（wifiConnectSaved）去重学后再试。
+  //      否则这里会清掉参数 + 把 useIP 改成 DHCP，与新逻辑互相打架。
+  if (wifiRelearnProtect) return false;
+
+  // ---- 自愈：清掉学来的网络参数 + 退回 DHCP 重连（保留旧逻辑作为最终兜底）----
   webLogln("🩹 自愈：清除学到的网关/掩码/DNS，改用 DHCP 重新获取（旧值 gw=%s mask=%s dns=%s）",
            wifiCfg.gw.toString().c_str(), wifiCfg.mask.toString().c_str(), wifiCfg.dns.toString().c_str());
   diag("网关自检不过 → 清网络参数 + 退 DHCP 自愈");
