@@ -1424,10 +1424,15 @@ bool chargeForceSlow = false;        // true = 本次充电临时用慢充（~29
 const float PR1_ON_V      = 3.40f;   // 低于此值才允许切电池直供
 const float PR1_OFF_V     = 3.50f;   // 回到此值以上切回 LDO
 const float PR1_HARD_MAX  = 3.60f;   // ⛔ 超过此值一律禁止拉高（绝对最大 3.6V）
-const float PR1_VALID_MIN = 2.00f;   // 低于此值视为读数无效（未接电池/传感器故障）
+const float PR1_VALID_MIN  = 2.00f;   // 低于此值视为读数无效（未接电池/传感器故障）
+//   低电深睡用的"读数合理性"下限：0V ≈ 电池被拔/未接，绝不能据此深睡（会醒不过来）
+const float LOWBAT_SANE_MIN_V = 0.50f;
 const float PR1_VALID_MAX = 4.50f;   // 高于此值视为读数无效
 
 bool pr1BatteryDirect = false;       // true = 当前选了 VIN1（电池直供）
+
+//   上电宽限期：这段时间内一律保持 LDO，让电源轨稳定、读数可信
+const unsigned long PR1_GRACE_MS = 60000UL;   // 60 秒
 
 void pr1SetDirect(bool direct, float vbat) {
   // ⛔ 最后一道保险：拉高之前再验一次电压。任何情况下都不许在高压时切直供。
@@ -1445,6 +1450,26 @@ void pr1SetDirect(bool direct, float vbat) {
 }
 
 void servicePr1Interlock(const PowerState& p) {
+  // ★ 守卫 0：上电宽限期 —— 电源未稳、读数不可信，一律保持 LDO
+  if (millis() < PR1_GRACE_MS) { if (pr1BatteryDirect) pr1SetDirect(false, p.battVolt);
+                                 else digitalWrite(PIN_PR1, LOW); return; }
+
+  // ★ 守卫 1（2026-10-03 加固）：**外接电源在位时绝不切电池直供**
+  //   用户指出：插着电去旁路 LDO 毫无意义 —— 旁路的意义只在电池供电时榨续航。
+  //   且拔插电池时 PGOOD 会瞬变，若此刻结合一个低电压读数就会误切 → 设备瞬间断电。
+  //   双重判据（PGOOD + 内部状态），且读数与状态自相矛盾时按"有外接电源"处理（保守）。
+  bool extPower = p.powered || isExternallyPowered()
+                  || (p.charging && !isnan(p.battVolt) && p.battVolt > PR1_OFF_V);
+  if (extPower) {
+    if (pr1BatteryDirect) {
+      pr1SetDirect(false, p.battVolt);
+      webLogln("🛡️ PR1 回 LDO：检测到外部电源（插电时不旁路 LDO）");
+    } else {
+      digitalWrite(PIN_PR1, LOW);
+    }
+    return;
+  }
+
   // 1) 读数有效性：无效 → 保持/回到 LDO（fail-safe）
   bool vValid = p.inaOK && p.battVolt > PR1_VALID_MIN && p.battVolt < PR1_VALID_MAX;
   if (!vValid) {
@@ -1546,11 +1571,14 @@ void enterDeepSleepIfNeeded() {
   WiFi.mode(WIFI_OFF);
   delay(50);
 
-  // 3. 配置唤醒源：PGOOD(IO2) 低电平唤醒（插电）
-  //    ext0 唤醒需要 GPIO 支持 deep-sleep 唤醒，IO2 是 RTC/唤醒引脚之一。
-  //    注意：此内核版本(3.3.9-cn)里 esp_sleep_enable_ext0_wakeup 的第二个
-  //    参数用数字电平(0=低电平触发)，而不是枚举名 ESP_GPIO_WAKEUP_GPIO_LOW。
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_2, 0);   // 0 = 低电平触发唤醒
+  // 3. 配置唤醒源：PGOOD 低电平唤醒（插电）
+  //    ⚠️ 2026-10-03 修复：原写死 `GPIO_NUM_2`（PGOOD 的**旧脚**）。
+  //       v2.2 引脚迁移后 PGOOD = IO10，而这一行没跟着改 →
+  //       **设备一旦深睡就监听一个空脚，永远醒不过来**（实测：拔电池黑屏后插 USB 无反应）。
+  //       现在改用 `PIN_PGOOD` 宏，引脚迁移时不会再漏。
+  //    ext0 唤醒要求 GPIO 属于 RTC 域且支持深睡唤醒；IO10 可作 RTC GPIO。
+  //    注意：此内核版本(3.3.9-cn)里第二个参数用数字电平(0=低电平触发)，不是枚举名。
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_PGOOD, 0);   // 0 = 低电平触发唤醒
 
   // 4. 进入深睡
   esp_deep_sleep_start();   // 不会返回，直到被唤醒（调用后重启，从 setup() 重新开始）
@@ -4149,11 +4177,39 @@ void readAndLog() {
       allowRecord = false;
       webLogln("🔋 电池电压 %.2fV < %.2fV，停止采集（电压回升后自动恢复）", ps.battVolt, battStopV);
     }
-    if (ps.battVolt < battSleepV) {          // < battSleepV（默认 3.5V，有表则按本机表 5% − 余量）：深睡保命
-      webLogln("🔋 电压 %.2fV < %.2fV，触发深睡保护", ps.battVolt, battSleepV);
-      enterDeepSleepIfNeeded();
-      return;
+    // ---- 深睡保护（2026-10-03 加固）----
+    //   用户实测事故：插着 USB 拔掉电池 → 设备黑屏关机，插电也不再启动。
+    //   两个原因：
+    //     ① 拔电池瞬间 INA230 读到 0V（芯片由 3.3V 轨供电，不会"离线"）→ 0 < 3.5V 直接深睡
+    //     ② 深睡唤醒源写死老脚 IO2（PGOOD 已迁到 IO10）→ 睡下就永远醒不过来
+    if (ps.battVolt < battSleepV) {
+      // 守卫 A：有外接电源（PGOOD 或 CHG 任一）→ 绝不深睡，系统继续跑
+      bool extPower = ps.powered || isExternallyPowered() || ps.charging
+                      || (ps.battVolt > PR1_OFF_V);   // 电压本身偏高 → 与"低电"矛盾 → 按有电处理
+      // 守卫 B：读数不可信（电池被拔/未接 → 0V 附近；或超出合理区间）
+      bool vSane = ps.inaOK && ps.battVolt > LOWBAT_SANE_MIN_V && ps.battVolt <= PR1_VALID_MAX;
+      if (extPower || !vSane) {
+        static unsigned long lastLowSkip = 0;
+        if (millis() - lastLowSkip > 300000UL) {      // 5 分钟限流
+          lastLowSkip = millis();
+          webLog("🛡️ 低电但**不深睡**：电压 %.3fV，%s（插电优先 / 电池读数不可信）\n",
+                 ps.battVolt, extPower ? "检测到外部电源" : "读数不可信（电池可能未接）");
+        }
+      } else {
+        // 守卫 C：**连续 3 次**采样都低才深睡（防 I2C 垃圾值 / 拔插瞬变）
+        static int lowStreak = 0;
+        lowStreak++;
+        if (lowStreak < 3) {
+          webLog("🔋 电压 %.3fV < %.2fV（第 %d/3 次确认，暂不深睡）\n",
+                 ps.battVolt, battSleepV, lowStreak);
+        } else {
+          webLogln("🔋 电压 %.3fV < %.2fV（连续 %d 次确认）→ 触发深睡保护", ps.battVolt, battSleepV, lowStreak);
+          enterDeepSleepIfNeeded();
+          return;
+        }
+      }
     }
+
   }
 
   if (shtOK) {
