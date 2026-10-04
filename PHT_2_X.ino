@@ -27,6 +27,7 @@
 #include <WiFiUdp.h>      // → V2.1.1-b 标定负载：向网关连发 UDP（纯发送就有射频功耗）
 #include "apps/ping/ping_sock.h"   // ← 内置 esp_ping（ICMP）：静态IP 查重用（core 3.3.11 实测可编译链接）
 #include <WebServer.h>
+#include <HTTPClient.h>   // v2.2 推送：向服务器 POST 样本（只用在这个功能的独立任务里）
 #include <time.h>
 #include <sys/time.h>
 #include <sys/time.h>
@@ -2935,6 +2936,100 @@ void saveDeviceMode(uint8_t m) {
   prefs.end();
 }
 
+// ==================== 推送（v2.2，局域网先行）====================
+//   设计依据：docs/推送功能设计.md；实现清单 docs/ESP32推送实现清单.md
+//   本段只做【配置与状态】；采集/发送逻辑在后面。
+//
+//   ⚠️ 用户已确认的决策（勿擅自改）：
+//     · 设备 ID 网页可配，但【AP 模式禁止改名】= 未连 WiFi 一律拒绝
+//     · 改名时必须查服务器占用，【服务器不可达也拒绝】—— 必须确保不重名
+//       （重名两台设备数据会混在一起，且服务器幂等去重 → 数据上根本看不出异常）
+//     · 推送约 15 分钟一次，多设备按 MAC 抖动错开
+//     · 电池供电不推（恰好与 wantWireless() 的"移动+电池全关无线"一致）
+//     · 插电时立刻检查并尝试同步
+//     · 丢 2~3 个点可接受，不追求绝对完整
+#define PUSH_INTERVAL_SEC     900       // 15 分钟
+#define PUSH_JITTER_MAX_SEC   120       // MAC 派生抖动上限，多设备天然错开
+#define PUSH_BATCH_MAX        200       // 每批最多条数（服务器上限 20000，留足余量）
+#define PUSH_CHUNK_GAP_MS     2000      // 批间让步，压低 WiFi 占空比（关键：不影响采样）
+#define PUSH_HTTP_TIMEOUT_MS  8000
+#define PUSH_SRV_HOST_DEF     "192.168.1.100"
+#define PUSH_SRV_PORT_DEF     8080
+#define PUSH_API_PATH         "/api/v1/samples"
+
+// ⚠️ token 绝不写进源码（仓库公开）。构建时注入：
+//    arduino-cli compile --build-property "compiler.cpp.extra_flags=-DPHT_API_TOKEN=..."
+//    未注入时为空 → 不发该请求头（仅在服务器 token 也留空时可用）
+#ifndef PHT_API_TOKEN
+#define PHT_API_TOKEN ""
+#endif
+
+bool     pushEnabled    = true;
+char     pushDevName[33] = {0};          // 设备 ID（NVS；空 = 用默认名）
+char     pushSrvHost[64] = PUSH_SRV_HOST_DEF;
+uint16_t pushSrvPort    = PUSH_SRV_PORT_DEF;
+uint32_t lastSyncedTs   = 0;             // 已成功上传的最大 ts（NVS）
+volatile bool pushLastOk = false;        // 最近一次发送是否成功
+uint32_t pushLastTryMs = 0, pushLastOkMs = 0;
+uint16_t pushFailStreak = 0;
+bool     pushConfigLoaded = false;
+
+// 设备名默认值：PHT-<MAC后6位>（唯一、免配置）
+void pushDefaultDevName(char* out, size_t n) {
+  uint64_t mac = ESP.getEfuseMac();
+  snprintf(out, n, "PHT-%02X%02X%02X",
+           (unsigned)((mac >> 16) & 0xFF), (unsigned)((mac >> 8) & 0xFF), (unsigned)(mac & 0xFF));
+}
+
+// 设备名合法性：字母/数字/点/下划线/连字符，1~32 字符
+bool pushDevNameValid(const char* nm) {
+  if (!nm) return false;
+  size_t L = strlen(nm);
+  if (L < 1 || L > 32) return false;
+  for (size_t i = 0; i < L; i++) {
+    char c = nm[i];
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// MAC 派生抖动（同设备固定 → 多设备天然错开，避免整点挤服务器）
+uint32_t pushJitterSec() {
+  uint64_t mac = ESP.getEfuseMac();
+  return (uint32_t)((mac >> 3) % PUSH_JITTER_MAX_SEC);
+}
+
+void loadPushConfig() {
+  prefs.begin("pht", true);
+  pushEnabled = prefs.getBool("pushOn", true);
+  String dn = prefs.getString("devName", "");
+  String sh = prefs.getString("srvHost", PUSH_SRV_HOST_DEF);
+  pushSrvPort  = prefs.getUShort("srvPort", PUSH_SRV_PORT_DEF);
+  lastSyncedTs = prefs.getULong("lastSync", 0);
+  prefs.end();
+
+  if (dn.length() > 0) { strlcpy(pushDevName, dn.c_str(), sizeof(pushDevName)); }
+  else                 { pushDefaultDevName(pushDevName, sizeof(pushDevName)); }
+  if (!pushDevNameValid(pushDevName)) {           // 兜底：非法名退回默认
+    pushDefaultDevName(pushDevName, sizeof(pushDevName));
+  }
+  if (sh.length() > 0) strlcpy(pushSrvHost, sh.c_str(), sizeof(pushSrvHost));
+  if (pushSrvPort == 0) pushSrvPort = PUSH_SRV_PORT_DEF;
+  pushConfigLoaded = true;
+}
+
+void savePushConfig() {
+  prefs.begin("pht", false);
+  prefs.putBool("pushOn", pushEnabled);
+  prefs.putString("devName", pushDevName);
+  prefs.putString("srvHost", pushSrvHost);
+  prefs.putUShort("srvPort", pushSrvPort);
+  prefs.putULong("lastSync", lastSyncedTs);
+  prefs.end();
+}
+
 // 当前无线状态 -> UI 图标
 // ===== V2.1.1-c 顶栏快通道：状态量（声明得早于 /status 组装）=====
 uint8_t  topSeenPw   = 2,  topSeenChg = 2;      // 2 = 未知 → 首轮强制刷一次
@@ -3010,6 +3105,16 @@ String buildStatusJson(bool overBLE) {
              ",\"usbSof\":" + String(usbReadSofFrame()) +
              ",\"allowCharge\":" + (usbAllowCharge ? "true" : "false") +
              ",\"chargingViable\":" + (usbChargingViable ? "true" : "false") +
+             // ---- 推送（v2.2，局域网先行）----
+             ",\"push\":{\"enabled\":" + (pushEnabled ? "true" : "false") +
+                          ",\"dev\":\"" + String(pushDevName) + "\"" +
+                          ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"" +
+                          ",\"lastSyncedTs\":" + String(lastSyncedTs) +
+                          ",\"lastOk\":" + (pushLastOk ? "true" : "false") +
+                          ",\"failStreak\":" + String(pushFailStreak) +
+                          ",\"jitter\":" + String(pushJitterSec()) +
+                          ",\"lastTrySec\":" + String(pushLastTryMs ? (millis() - pushLastTryMs) / 1000 : 0) +
+                          ",\"lastOkSec\":" + String(pushLastOkMs ? (millis() - pushLastOkMs) / 1000 : 0) + "}" +
              ",\"pr1Raw\":" + String(digitalRead(PIN_PR1)) +
              ",\"pr1Safe\":" + ((!pr1BatteryDirect || ps.battVolt <= PR1_HARD_MAX) ? "true" : "false") +
              ",\"pr1Thr\":{\"on\":" + String(PR1_ON_V, 2) +
@@ -4408,6 +4513,108 @@ doScan();
     server.send(200, "application/json", j);
   });
 
+  // ---- 设备名（推送用）配置与校验（v2.2）----
+  //   ⛔ 硬规则（用户明确要求，勿放宽）：
+  //     ① 必须联网才能改名（AP 模式 / 未连 WiFi 一律拒绝）—— "没网改个der的网名"
+  //     ② 必须向服务器确认名字没被占用；**服务器不可达也拒绝**
+  //        → 因为重名两台设备的数据会混进同一 device_id，而服务器按 ts 幂等去重，
+  //          从数据上根本看不出异常，等发现时已经脏了。宁可不给改。
+  server.on("/devname", HTTP_GET, []() {
+    char dflt[33];
+    pushDefaultDevName(dflt, sizeof(dflt));
+    String j = String("{\"dev\":\"") + pushDevName + "\",\"default\":\"" + dflt + "\"";
+    j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+    j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
+    j += ",\"lastSyncedTs\":" + String(lastSyncedTs) + ",\"enabled\":" +
+         String(pushEnabled ? "true" : "false") + "}";
+    server.send(200, "application/json", j);
+  });
+
+  server.on("/devname", HTTP_POST, []() {
+    if (!server.hasArg("dev")) {
+      server.send(400, "application/json", "{\"ok\":false,\"err\":\"缺少 dev 参数\"}");
+      return;
+    }
+    String want = server.arg("dev");
+    want.trim();
+
+    // ① 未连 WiFi（含 AP 模式）→ 直接拒绝（没网就无法校验，也就无法保证不重名）
+    if (WiFi.status() != WL_CONNECTED) {
+      webLogln("🚫 改名被拒：未连 WiFi（无法向服务器校验重名）");
+      server.send(200, "application/json",
+                  "{\"ok\":false,\"err\":\"未连上路由器，无法校验重名，禁止改名\"}");
+      return;
+    }
+    // ② 合法性
+    if (!pushDevNameValid(want.c_str())) {
+      server.send(200, "application/json",
+                  "{\"ok\":false,\"err\":\"名称只能用字母/数字/点/下划线/连字符，长度 1~32\"}");
+      return;
+    }
+    // ③ 没变 → 直接成功
+    if (want == String(pushDevName)) {
+      server.send(200, "application/json",
+                  String("{\"ok\":true,\"dev\":\"") + pushDevName + "\",\"unchanged\":true}");
+      return;
+    }
+
+    // ④ 查服务器占用（只读接口，免 token）。失败/超时/解析异常 → 一律拒绝。
+    bool taken = false, srvOK = false;
+    {
+      WiFiClient c;
+      HTTPClient http;
+      String url = String("http://") + pushSrvHost + ":" + String(pushSrvPort) + "/api/v1/devices";
+      http.setConnectTimeout(4000);
+      http.setTimeout(PUSH_HTTP_TIMEOUT_MS);
+      if (http.begin(c, url)) {
+        int code = http.GET();
+        if (code == 200) {
+          String body = http.getString();
+          srvOK = true;
+          // 服务器返回 {"devices":[{"device_id":"...",...}]}
+          // 简单扫描取 device_id，避免引 JSON 库（此接口结构稳定）
+          int from = 0;
+          while (true) {
+            int k = body.indexOf("\"device_id\"", from);
+            if (k < 0) break;
+            int colon = body.indexOf(':', k);
+            if (colon < 0) break;
+            int q1 = body.indexOf('"', colon + 1);
+            if (q1 < 0) break;
+            int q2 = body.indexOf('"', q1 + 1);
+            if (q2 < 0) break;
+            if (body.substring(q1 + 1, q2) == want) taken = true;
+            from = q2 + 1;
+          }
+        }
+        http.end();
+      }
+    }
+
+    if (!srvOK) {
+      webLogln("🚫 改名被拒：服务器不可达（无法确认 %s 是否重名）", want.c_str());
+      server.send(200, "application/json",
+                  "{\"ok\":false,\"err\":\"服务器不可达，无法确认是否重名，已拒绝\"}");
+      return;
+    }
+    // 注意：如果服务器里已有的正是"当前自己的名字"，那不算被占用（重装/改回场景）
+    bool isSelf = (want == String(pushDevName));
+    if (taken && !isSelf) {
+      webLogln("🚫 改名被拒：%s 已被别的设备占用", want.c_str());
+      server.send(200, "application/json",
+                  String("{\"ok\":false,\"err\":\"名称已被占用：") + want + "\"}");
+      return;
+    }
+
+    // ⑤ 通过 → 落盘
+    strlcpy(pushDevName, want.c_str(), sizeof(pushDevName));
+    savePushConfig();
+    webLog("🏷️ 设备名已改 -> %s（服务器校验通过）\n", pushDevName);
+    server.send(200, "application/json",
+                String("{\"ok\":true,\"dev\":\"") + pushDevName + "\"}");
+  });
+
+
   // ---- V2.1.1-b 电量校准（放电曲线标定）----
   server.on("/battcal", []() { server.send(200, "text/html; charset=utf-8", calPageHtml()); });
   server.on("/battcal/status", []() { server.send(200, "application/json", calStatusJson()); });
@@ -5004,6 +5211,7 @@ void setup() {
   initRTC();
   initFS();
   loadDeviceMode();                    // 读固定/移动（充电策略与顶栏都要用）
+  loadPushConfig();                    // 读推送配置（设备名/服务器/同步游标）
   calBootCheck();                      // 载入标定曲线 → 低电三档
   uiDisplay.init();
 
