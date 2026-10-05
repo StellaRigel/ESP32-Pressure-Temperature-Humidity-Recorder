@@ -3008,7 +3008,17 @@ void saveDeviceMode(uint8_t m) {
 #define PHT_API_TOKEN PHT_STR(PHT_API_TOKEN_RAW)
 
 bool     pushEnabled    = true;
-char     pushDevName[33] = {0};          // 设备 ID（NVS；空 = 用默认名）
+// ⚠️ **身份与显示名是两回事**（2026-10-05 拆分）：
+//   pushDevId   = 身份。eFuse MAC 派生，**终身不变**。进签名串、注册 URL、
+//                 推送 body 的 device 字段、服务器样本归属。**永远不要改它。**
+//   pushDevName = 显示名。给人看的，可改、可中文、可与别人重名。
+//                 只进 NVS、改名请求、和本地网页标题；**不进签名、不进推送 body**。
+char     pushDevId[33]    = {0};
+char     pushDevName[104] = {0};         // UTF-8，≤24 码点（最多 4 字节/码点）
+// 最近一次从服务器响应头 X-PHT-Now 读到的时间（0 = 从未读到）。
+//   ⚠️ 暴露它是为了**可观测**：否则"头没读到"这种静默失效根本看不出来。
+uint32_t pushSrvClock = 0;
+bool     pushNoNowHdrWarned = false;
 char     pushSrvHost[64] = PUSH_SRV_HOST_DEF;
 uint16_t pushSrvPort    = PUSH_SRV_PORT_DEF;
 uint32_t lastSyncedTs   = 0;             // 已成功上传的最大 ts（NVS）
@@ -3052,25 +3062,49 @@ volatile bool pushPowerWasExt = false;     // 插电触发用：上一轮是否�
 uint32_t pushLastBootPushMs   = 0;         // 本会话首次「有无线」的时刻（首推基准）
 uint8_t  pushPassCount        = 0;         // 本会话已完成的同步轮次（/status 观察用）
 
-// 设备名默认值：PHT-<MAC后6位>（唯一、免配置）
-void pushDefaultDevName(char* out, size_t n) {
+// 设备 **ID**：PHT-<MAC后6位>，来自芯片出厂熔丝（eFuse），**终身不变**。
+//   ⚠️ 用 ESP.getEfuseMac() 而不是 WiFi.macAddress()：后者能被
+//      esp_wifi_set_mac() 改掉，前者是熔丝值，跨刷机/OTA 恒定。
+void pushDeriveDevId(char* out, size_t n) {
   uint64_t mac = ESP.getEfuseMac();
   snprintf(out, n, "PHT-%02X%02X%02X",
            (unsigned)((mac >> 16) & 0xFF), (unsigned)((mac >> 8) & 0xFF), (unsigned)(mac & 0xFF));
 }
 
-// 设备名合法性：字母/数字/点/下划线/连字符，1~32 字符
+// 网页标题用哪个名字：优先**显示名**，空则回退出厂默认。
+//   withPrefix=true 给 <title>（默认"微型气象站 v2.1"），
+//   false 给页面 <h2>（默认"气象站 v2.1"）—— 保持原有观感不变。
+//   \u26a0\ufe0f 只影响**显示**；身份永远是 pushDevId。
+String pushTitle(bool withPrefix) {
+  if (pushDevName[0]) return String(pushDevName);
+  return withPrefix ? String("\u5fae\u578b\u6c14\u8c61\u7ad9 v2.1") : String("\u6c14\u8c61\u7ad9 v2.1");
+}
+
+// 显示名合法性。⚠️ **必须与服务器的 NAME_MAX_CHARS / _name_error 保持一致**，
+//   否则会出现"设备说存下了、服务器却拒绝"这种两边不一致的状态。
+//   规则：1~24 个 **Unicode 码点**（中文一个字算一个），不允许控制字符，
+//        其余一律允许（中文/emoji/空格/标点都行）。
+//   注意这里放宽了：老版本只允许 ASCII 字母数字 . _ - —— 那是**身份名**的规则。
 bool pushDevNameValid(const char* nm) {
   if (!nm) return false;
   size_t L = strlen(nm);
-  if (L < 1 || L > 32) return false;
-  for (size_t i = 0; i < L; i++) {
-    char c = nm[i];
-    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-    if (!ok) return false;
+  if (L < 1 || L > 96) return false;          // 24 码点 × 最多 4 字节
+  int cp = 0;
+  for (size_t i = 0; i < L; ) {
+    unsigned char c = (unsigned char)nm[i];
+    int len;
+    if (c < 0x80) { len = 1; if (c < 0x20 || c == 0x7F) return false; }
+    else if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    else return false;                        // 非法前导字节
+    if (i + len > L) return false;            // 多字节序列被截断
+    for (int k = 1; k < len; k++) {
+      if (((unsigned char)nm[i + k] & 0xC0) != 0x80) return false;   // 续字节校验
+    }
+    i += len; cp++;
   }
-  return true;
+  return (cp >= 1 && cp <= 24);
 }
 
 // MAC 派生抖动（同设备固定 → 多设备天然错开，避免整点挤服务器）
@@ -3118,7 +3152,7 @@ bool devKeySignHeader(uint32_t ts, const String& body, String& out) {
   if (!pht_unhex(devKeySecret, key, sizeof(key))) return false;
 
   // 待签串 —— ⚠️ 必须与服务器 devicekey._canonical 逐字节一致
-  String msg = String("v1|") + pushDevName + "|" + String((unsigned long)ts) + "|" + body;
+  String msg = String("v1|") + pushDevId + "|" + String((unsigned long)ts) + "|" + body;
 
   uint8_t mac[32];
   pht_hmac_sha256(key, sizeof(key), msg.c_str(), msg.length(), mac);
@@ -3128,7 +3162,7 @@ bool devKeySignHeader(uint32_t ts, const String& body, String& out) {
   pht_hex(mac, sizeof(mac), hex);
   memset(mac, 0, sizeof(mac));
 
-  out = String("v1|") + pushDevName + "|" + String((unsigned long)ts) + "|" + hex;
+  out = String("v1|") + pushDevId + "|" + String((unsigned long)ts) + "|" + hex;
   return true;
 }
 
@@ -3144,7 +3178,7 @@ bool devKeyEnroll(const char* enrollPw) {
   String body = String("{\"secret\":\"") + devKeySecret +
                 "\",\"key_id\":\"" + devKeyId + "\"}";
   String url = String("http://") + pushSrvHost + ":" + String(pushSrvPort) +
-               "/api/v1/devices/" + pushDevName + "/key";
+               "/api/v1/devices/" + pushDevId + "/key";
 
   WiFiClient c;
   HTTPClient http;
@@ -3160,7 +3194,7 @@ bool devKeyEnroll(const char* enrollPw) {
   http.end();
 
   if (code == 200) {
-    webLogln("✅ 密钥已注册到服务器（%s）", pushDevName);
+    webLogln("✅ 密钥已注册到服务器（%s）", pushDevId);
     return true;
   }
   if (code == 403)      webLogln("❌ 注册被拒 403：服务器认为来源不是内网。请从内网访问设备网页再点注册");
@@ -3176,7 +3210,8 @@ bool devKeyEnroll(const char* enrollPw) {
 void loadPushConfig() {
   prefs.begin("pht", true);
   pushEnabled = prefs.getBool("pushOn", true);
-  String dn = prefs.getString("devName", "");
+  String dn = prefs.getString("devName", "");   // 老固件的"名字"（其实是身份）
+  String nm = prefs.getString("devShow", "");   // 新固件的显示名
   String sh = prefs.getString("srvHost", PUSH_SRV_HOST_DEF);
   pushSrvPort  = prefs.getUShort("srvPort", PUSH_SRV_PORT_DEF);
   lastSyncedTs = prefs.getULong("lastSync", 0);
@@ -3196,11 +3231,19 @@ void loadPushConfig() {
   }
   prefs.end();
 
-  if (dn.length() > 0) { strlcpy(pushDevName, dn.c_str(), sizeof(pushDevName)); }
-  else                 { pushDefaultDevName(pushDevName, sizeof(pushDevName)); }
-  if (!pushDevNameValid(pushDevName)) {           // 兜底：非法名退回默认
-    pushDefaultDevName(pushDevName, sizeof(pushDevName));
+  // ---- 身份：永远是 eFuse 派生值（除非下面的老库迁移另有交代）----
+  pushDeriveDevId(pushDevId, sizeof(pushDevId));
+  // ⚠️ **老库迁移**：老固件只有一个 `devName`，它既当身份又当显示名。
+  //    如果老库里存着一个**不等于**派生值的名字，说明这台设备在服务器上的
+  //    身份就是那个名字 —— 必须继续沿用它当 ID，否则历史数据会对不上账。
+  if (dn.length() > 0 && dn != String(pushDevId)) {
+    webLogln("\u2139\ufe0f 沿用旧身份名作为设备 ID：%s（eFuse 派生值 %s）",
+             dn.c_str(), pushDevId);
+    strlcpy(pushDevId, dn.c_str(), sizeof(pushDevId));
   }
+  // ---- 显示名：独立字段；空 = 未设置（网页与服务器都回退显示 ID）----
+  if (pushDevNameValid(nm.c_str())) strlcpy(pushDevName, nm.c_str(), sizeof(pushDevName));
+  else                              pushDevName[0] = '\0';
   if (sh.length() > 0) strlcpy(pushSrvHost, sh.c_str(), sizeof(pushSrvHost));
   if (pushSrvPort == 0) pushSrvPort = PUSH_SRV_PORT_DEF;
   pushConfigLoaded = true;
@@ -3209,7 +3252,8 @@ void loadPushConfig() {
 void savePushConfig() {
   prefs.begin("pht", false);
   prefs.putBool("pushOn", pushEnabled);
-  prefs.putString("devName", pushDevName);
+  prefs.putString("devName", pushDevId);      // 老固件读这个当身份 → 保持兼容
+  prefs.putString("devShow", pushDevName);    // 新固件读这个当显示名
   prefs.putString("srvHost", pushSrvHost);
   prefs.putUShort("srvPort", pushSrvPort);
   prefs.putULong("lastSync", lastSyncedTs);
@@ -3233,7 +3277,111 @@ void savePushConfig() {
 //     ② 采样节拍不能被推送拖慢 —— 批间 sleep + 同优先级时间片轮转；
 //     ③ 时间不可信（未同步 NTP/RTC）时**绝不推送** —— 时间戳是服务器主键，发脏了就永久错位。
 
-// 设备 id 的 JSON 转义（名称走白名单校验，实际逃逸不掉；这里仍防一手）
+// ==================== 以服务器为准的对时（2026-10-05）====================
+//   为什么把服务器当时间源：签名窗是**拿服务器的钟判的**（devicekey.verify 的
+//   ±HMAC_SKEW_SEC）。设备钟漂了超过 90 秒 → 每次推送必然 401；而 NTP 为了省电
+//   只在"插电 + 距上次成功 ≥3 天"才跑，电池供电时根本不会跑 →
+//   **数据会一直堆着传不上去，直到你插上电**。
+//
+//   服务器在**所有**响应上带 X-PHT-Now（含 401/429）——这是关键：
+//   时钟坏掉时推送必然 401，只有 401 也带着时间，它才能在下一次推送自愈。
+//
+//   对电池策略零冲突：推送本来就在发生，对时是**顺带**的，不额外开射频。
+#define SERVER_TIME_MIN_DRIFT 30            // 差 30 秒以内不动它（别为几秒折腾系统钟）
+
+// 应用服务器给的时间。hdrVal 是 X-PHT-Now 的值（Unix 秒字符串）。
+void applyServerTime(const String& hdrVal) {
+  long long srv = atoll(hdrVal.c_str());
+  if (srv < 1700000000LL) return;           // 没给 / 给了垃圾
+  long long nowT = (long long)time(nullptr);
+  long long drift = srv - nowT;
+  long long ad = drift < 0 ? -drift : drift;
+  if (ad < SERVER_TIME_MIN_DRIFT) return;
+
+  timeval tv; tv.tv_sec = (time_t)srv; tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+
+  // ⚠️ 时钟**向后跳**必须一并回退同步游标，否则会**静默丢数据**：
+  //    推送只发 ts > lastSyncedTs 的点；往回拨钟后新采的点时间戳变小，
+  //    可能落到游标之下 → 那些点永远发不出去（RAM 环和 SD 归档两条路都卡住）。
+  //    回退游标会让旧点被**重发**一遍 —— 服务器按 ts 幂等去重，重发无害，漏发有害。
+  if (drift < 0 && pushCursorValid && lastSyncedTs > (uint32_t)srv) {
+    lastSyncedTs = (uint32_t)srv - 60;      // 多回退一点留余量
+    pushCursorValid = false;
+    savePushConfig();
+    webLogln("\u26a0\ufe0f 时钟向后校正 %lld 秒 → 同步游标一并回退（旧点会重发，服务器去重）", drift);
+  }
+  if (rtcOK) rtc.adjust(DateTime((uint32_t)srv));   // 顺手校 DS3231（离线基准）
+  webLogln("\U0001f550 已按服务器校时（偏差 %+lld 秒）", drift);
+}
+
+// ==================== 改显示名（2026-10-05）====================
+//   **必须服务器验签通过才落 NVS**。为什么不能只在本地改：
+//     * 网络断了你改了、服务器没改 → 两边长期不一致；
+//     * 服务器是"改名通知"的源头，本地擅自改会被它下次下发覆盖回来。
+//   鉴权用**设备自己的密钥签名**（X-PHT-Auth），**不是绑定口令** ——
+//   绑定口令能换任意设备的密钥（劫持数据流），绝不能交给朋友。
+bool devRenameTo(const char* want) {
+  if (!want) return false;
+  if (!pushDevNameValid(want)) {
+    webLogln("\u274c 改名失败：名字不合法（1~24 个字符，不能有控制字符）");
+    return false;
+  }
+  if (!devKeyBound()) {
+    webLogln("\u274c 改名失败：这台设备还没绑定密钥（改名要靠密钥签名）");
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    webLogln("\u274c 改名失败：未连 WiFi");
+    return false;
+  }
+  if (time(nullptr) < 1700000000) {
+    webLogln("\u274c 改名失败：设备时钟不可信（服务器只收 \u00b190 秒内的签名）");
+    return false;
+  }
+
+  String body = String("{\"name\":\"") + pushJsonEsc(want) + "\"}";
+  uint32_t ts = (uint32_t)time(nullptr);
+  String hdr;
+  if (!devKeySignHeader(ts, body, hdr)) {
+    webLogln("\u274c 改名失败：签名失败（密钥格式非法？）");
+    return false;
+  }
+
+  String url = String("http://") + pushSrvHost + ":" + String(pushSrvPort) +
+               "/api/v1/devices/" + pushDevId + "/name";
+  WiFiClient c;
+  HTTPClient http;
+  http.setConnectTimeout(4000);
+  http.setTimeout(8000);
+  http.setReuse(false);
+  if (!http.begin(c, url)) { webLogln("\u274c 改名失败：URL 解析失败"); return false; }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-PHT-Auth", hdr);
+
+  int code = http.POST((uint8_t*)body.c_str(), body.length());
+  String resp = (code > 0) ? http.getString() : String();
+  http.end();
+
+  if (code != 200) {
+    if (code == 401)      webLogln("\u274c 改名被拒 401：签名无效（时钟偏差过大？或服务器上密钥不一致）");
+    else if (code == 403) webLogln("\u274c 改名被拒 403：签名里的设备与请求路径不一致");
+    else if (code == 400) webLogln("\u274c 改名被拒 400：服务器认为名字不合法 %s", resp.substring(0, 90).c_str());
+    else if (code < 0)    webLogln("\u274c 改名失败：服务器不可达（%s:%u）", pushSrvHost, (unsigned)pushSrvPort);
+    else                  webLogln("\u274c 改名失败：HTTP %d %s", code, resp.substring(0, 90).c_str());
+    return false;
+  }
+
+  strlcpy(pushDevName, want, sizeof(pushDevName));
+  savePushConfig();
+  webLog("\U0001f3f7\ufe0f 设备名已改 -> %s（服务器已记下）\n", pushDevName);
+  if (resp.indexOf("\"duplicate_of\":\"") >= 0) {
+    webLogln("\u2139\ufe0f 提示：已有另一台设备用这个名字 —— 服务器列表里会用 ID 后缀区分，不影响使用");
+  }
+  return true;
+}
+
+// JSON 转义（设备名可以含中文/emoji，所以必须真的转义，不能只靠白名单）
 static String pushJsonEsc(const char* s) {
   String o; o.reserve(strlen(s) + 4);
   for (const char* p = s; *p; ++p) {
@@ -3524,7 +3672,7 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
 
   String body;
   body.reserve((size_t)n * 90 + 128);
-  body  = "{\"device\":\"" + pushJsonEsc(pushDevName) + "\",\"fw\":\"" + PUSH_FW_VER + "\",\"samples\":[";
+  body  = "{\"device\":\"" + pushJsonEsc(pushDevId) + "\",\"fw\":\"" + PUSH_FW_VER + "\",\"samples\":[";
   char item[128];
   for (int i = 0; i < n; i++) {
     int k = snprintf(item, sizeof(item), "%s{\"ts\":%lu", (i ? "," : ""), (unsigned long)ts[i]);
@@ -3554,6 +3702,10 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
   //      这里送出去的也是 body 的原始字节，两边一致。
   //   ⚠️ 用 time(nullptr) 当 ts：服务器只接受 ±90s。设备时间靠 RTC/NTP，
   //      没校时时 ts 不可信 → 那种情况下服务器会 401，日志里能看到原因。
+  // 收 X-PHT-Now：把服务器当时间源（见 applyServerTime 的说明）
+  static const char* kNowHdr[] = { "X-PHT-Now" };
+  http.collectHeaders(kNowHdr, 1);
+
   if (devKeyBound()) {
     uint32_t nowTs = (uint32_t)time(nullptr);
     String authHdr;
@@ -3572,7 +3724,20 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
 
   int code = http.POST((uint8_t*)body.c_str(), body.length());
   String resp = (code > 0) ? http.getString() : String();
+  String srvNow = http.header("X-PHT-Now");   // \u26a0\ufe0f 必须在 end() 之前读
   http.end();
+
+  // 无论成功还是 401/429 都校时 —— 这正是"时钟坏掉能自愈"的关键
+  if (srvNow.length()) {
+    pushSrvClock = (uint32_t)atoll(srvNow.c_str());
+    applyServerTime(srvNow);
+  } else if (!pushNoNowHdrWarned) {
+    // 只报一次，免得刷屏。**这条很重要**：没有它，"头压根没读到"这种静默
+    // 失效（比如 collectHeaders 没生效）会完全看不出来，功能悄悄变成空转。
+    pushNoNowHdrWarned = true;
+    webLogln("\u26a0\ufe0f 推送响应里没有 X-PHT-Now 头 —— 服务器版本可能过旧，"
+             "无法按服务器校时（不影响推送本身）");
+  }
 
   if (code != 200) {
     if (code == 401)      webLogln(devKeyBound()
@@ -3597,6 +3762,23 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
       long bf = resp.substring(cc + 1).toInt();
       if (bf > 1000000000) { pushNeedBackfill = true; pushBackfillBeforeTs = (uint32_t)bf; }
       else                 { pushNeedBackfill = false; pushBackfillBeforeTs = 0; }
+    }
+  }
+
+  // 管理员在服务器上改过名 → 借这次**成功**响应回传一次（服务器取完即清，不空转）。
+  //   没改名时响应里根本没有 name 字段，所以这里几乎不会命中。
+  int kn = resp.indexOf("\"name\"");
+  if (kn >= 0) {
+    int c1 = resp.indexOf(':', kn);
+    int q1 = (c1 > 0) ? resp.indexOf('"', c1 + 1) : -1;
+    int q2 = (q1 > 0) ? resp.indexOf('"', q1 + 1) : -1;
+    if (q1 > 0 && q2 > q1) {
+      String nm = resp.substring(q1 + 1, q2);
+      if (nm.length() && nm != String(pushDevName) && pushDevNameValid(nm.c_str())) {
+        strlcpy(pushDevName, nm.c_str(), sizeof(pushDevName));
+        savePushConfig();
+        webLogln("\U0001f3f7\ufe0f 服务器下发了新设备名：%s", pushDevName);
+      }
     }
   }
   return true;
@@ -3832,7 +4014,9 @@ String buildStatusJson(bool overBLE) {
              ",\"chargingViable\":" + (usbChargingViable ? "true" : "false") +
              // ---- 推送（v2.2，局域网先行）----
              ",\"push\":{\"enabled\":" + (pushEnabled ? "true" : "false") +
-                          ",\"dev\":\"" + String(pushDevName) + "\"" +
+                          ",\"dev\":\"" + String(pushDevId) + "\"" +            // dev = 身份（脚本/对账用）
+                          ",\"name\":\"" + pushJsonEsc(pushDevName) + "\"" +     // name = 显示名（可空）
+                          ",\"srvClock\":" + String((unsigned long)pushSrvClock) +    // 最近读到的服务器时间（0=没读到）
                           ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"" +
                           ",\"lastSyncedTs\":" + String(lastSyncedTs) +
                            ",\"cursorOk\":" + (pushCursorValid ? "true" : "false") +   // 环已推干净（游标可信）；false=中间有空档
@@ -4112,7 +4296,7 @@ void startServer() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>微型气象站 v2.1</title>)rawliteral" + String(WEB_ICONS) + R"rawliteral(
+<title>)rawliteral" + pushTitle(true) + R"rawliteral(</title>)rawliteral" + String(WEB_ICONS) + R"rawliteral(
 <style>
 body{font-family:sans-serif;margin:10px;background:#f5f5f5}
 .card{background:white;padding:15px;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,.1);margin-bottom:15px}
@@ -4168,7 +4352,7 @@ canvas{height:200px;background:white;border-radius:6px;box-sizing:border-box;tou
 
 <div class="card">
   <div style="display:flex;align-items:center;gap:9px">)rawliteral" + String(WEB_LOGO_SVG) + R"rawliteral(
-    <h2 style="margin:0">气象站 v2.1 <span style="font-size:12px;color:#888;" id="filterLabel">滤波: 卡尔曼</span></h2>
+    <h2 style="margin:0">)rawliteral" + pushTitle(false) + R"rawliteral( <span style="font-size:12px;color:#888;" id="filterLabel">滤波: 卡尔曼</span></h2>
   </div>
   <div class="info">间隔: )rawliteral" + String(INTERVAL_SEC) + R"rawliteral(秒 | 显示: <span id="cnt">-</span>条 | SD: <span id="sdStatus">-</span></div>
   <div id="status">加载中...</div>
@@ -4242,6 +4426,14 @@ canvas{height:200px;background:white;border-radius:6px;box-sizing:border-box;tou
 <span id="card-battcal"><a class="btn btn-nav" href="/battcal">🔋 电量校准</a></span>
   <a class="btn btn-download" id="btn-ota" href="/update" style="background:#e74c3c">🔄 OTA升级</a>
   <button class="btn btn-clear" onclick="doReboot()">🔌 重启设备</button>
+  <!-- 设备名：**无害的东西放明面**（朋友要能自己改），危险的才低调放 /keycfg。
+       保存必须服务器验签通过才落盘 —— 连不上服务器会直接拒绝并提示。 -->
+  <div style="margin-top:10px;font-size:12.5px">
+    <span style="font-size:12px;color:#666;font-weight:600">设备名</span>
+    <input id="dnIn" maxlength="24" placeholder="可中文，最多 24 字" style="padding:6px 8px">
+    <button class="btn btn-sync" onclick="setDevName()">保存名称</button>
+    <span id="dnTip" style="font-size:11.5px;color:#888"></span>
+  </div>
   <!-- 密钥/推送配置入口：**故意低调**（系统卡末尾一行灰色小字，不是按钮）——
        那个页面的操作能让设备立刻与服务器失联，不适合做成显眼按钮。 -->
   <div style="margin-top:10px;font-size:11px;color:#a0aec0">
@@ -4253,6 +4445,34 @@ canvas{height:200px;background:white;border-radius:6px;box-sizing:border-box;tou
    V2.1：BLE 已整体停用（固件 ENABLE_BLE=0），页面不再有 Web Bluetooth 路径。
    保留 apiFetch() 作为薄封装，各调用点零改动（历史：一份 HTML 双传输 WiFi/BLE）。 */
 function apiFetch(url, opt){ return fetch(url, opt); }
+
+// 保存设备名。**必须服务器验签通过才算成功**（见 devRenameTo 的说明）：
+//   连不上服务器 / 时钟不可信 / 名字非法 → 直接拒绝，本地不落盘。
+//   所以"保存成功"就意味着服务器已经记下了，两边不会长期不一致。
+async function setDevName() {
+  var t = document.getElementById('dnTip');
+  var nm = document.getElementById('dnIn').value.trim();
+  if (!nm) { t.style.color = '#c0392b'; t.textContent = '名字不能为空'; return; }
+  t.style.color = '#888'; t.textContent = '保存中…';
+  try {
+    var r = await fetch('/devname', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'dev=' + encodeURIComponent(nm)
+    });
+    var j = await r.json();
+    if (j.ok) {
+      t.style.color = '#16794a';
+      t.textContent = '已保存：' + j.name + '（刷新页面后标题会变）';
+    } else {
+      t.style.color = '#c0392b';
+      t.textContent = j.err || '保存失败';
+    }
+  } catch (e) {
+    t.style.color = '#c0392b';
+    t.textContent = '保存失败：' + e;
+  }
+}
 </script>
 
 <script>
@@ -5253,12 +5473,18 @@ doScan();
   //          从数据上根本看不出异常，等发现时已经脏了。宁可不给改。
   server.on("/devname", HTTP_GET, []() {
     char dflt[33];
-    pushDefaultDevName(dflt, sizeof(dflt));
-    String j = String("{\"dev\":\"") + pushDevName + "\",\"default\":\"" + dflt + "\"";
+    pushDeriveDevId(dflt, sizeof(dflt));
+    // dev = 身份（固定不变）；name = 显示名（可改、可空）；default = 身份默认值
+    String j = String("{\"dev\":\"") + pushDevId + "\",\"name\":\"" +
+               pushJsonEsc(pushDevName) + "\",\"default\":\"" + dflt + "\"";
     j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
     j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
     j += ",\"lastSyncedTs\":" + String(lastSyncedTs) +
-                           ",\"cursorOk\":" + (pushCursorValid ? "true" : "false") +   // 环已推干净（游标可信）；false=中间有空档 ",\"enabled\":" +
+                           ",\"cursorOk\":" + (pushCursorValid ? "true" : "false") +   // 环已推干净（游标可信）；false=中间有空档
+                           // ⚠️ 字段名绝不能留在行尾注释里 —— 之前这里写成
+                           //    `..., // 说明 ",\"enabled\":" +`，注释把字段名吃掉了，
+                           //    结果拼出 `"cursorOk":falsetrue}`，**是非法 JSON**（解析器直接报错）。
+                           ",\"enabled\":" +
          String(pushEnabled ? "true" : "false") + "}";
     server.send(200, "application/json", j);
   });
@@ -5278,73 +5504,26 @@ doScan();
                   "{\"ok\":false,\"err\":\"未连上路由器，无法校验重名，禁止改名\"}");
       return;
     }
-    // ② 合法性
-    if (!pushDevNameValid(want.c_str())) {
-      server.send(200, "application/json",
-                  "{\"ok\":false,\"err\":\"名称只能用字母/数字/点/下划线/连字符，长度 1~32\"}");
-      return;
-    }
-    // ③ 没变 → 直接成功
+    // ② 没变 → 直接成功（省一次往返）
     if (want == String(pushDevName)) {
       server.send(200, "application/json",
-                  String("{\"ok\":true,\"dev\":\"") + pushDevName + "\",\"unchanged\":true}");
+                  String("{\"ok\":true,\"name\":\"") + pushJsonEsc(pushDevName) +
+                  "\",\"dev\":\"" + pushDevId + "\",\"unchanged\":true}");
       return;
     }
 
-    // ④ 查服务器占用（只读接口，免 token）。失败/超时/解析异常 → 一律拒绝。
-    bool taken = false, srvOK = false;
-    {
-      WiFiClient c;
-      HTTPClient http;
-      String url = String("http://") + pushSrvHost + ":" + String(pushSrvPort) + "/api/v1/devices";
-      http.setConnectTimeout(4000);
-      http.setTimeout(PUSH_HTTP_TIMEOUT_MS);
-      if (http.begin(c, url)) {
-        int code = http.GET();
-        if (code == 200) {
-          String body = http.getString();
-          srvOK = true;
-          // 服务器返回 {"devices":[{"device_id":"...",...}]}
-          // 简单扫描取 device_id，避免引 JSON 库（此接口结构稳定）
-          int from = 0;
-          while (true) {
-            int k = body.indexOf("\"device_id\"", from);
-            if (k < 0) break;
-            int colon = body.indexOf(':', k);
-            if (colon < 0) break;
-            int q1 = body.indexOf('"', colon + 1);
-            if (q1 < 0) break;
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q2 < 0) break;
-            if (body.substring(q1 + 1, q2) == want) taken = true;
-            from = q2 + 1;
-          }
-        }
-        http.end();
-      }
-    }
-
-    if (!srvOK) {
-      webLogln("🚫 改名被拒：服务器不可达（无法确认 %s 是否重名）", want.c_str());
+    // ③~⑤ 交给 devRenameTo：本地校验 → HMAC 签名 → 服务器验签 →
+    //        **成功才落 NVS**。失败一律拒绝（不落盘）——
+    //        这就实现了"连不上服务器就拒绝并提醒"。
+    //        重名**不再拒绝**（只影响观感），服务器会在响应里带回 duplicate_of。
+    if (!devRenameTo(want.c_str())) {
       server.send(200, "application/json",
-                  "{\"ok\":false,\"err\":\"服务器不可达，无法确认是否重名，已拒绝\"}");
+                  "{\"ok\":false,\"err\":\"改名失败（原因见设备「日志」页）\"}");
       return;
     }
-    // 注意：如果服务器里已有的正是"当前自己的名字"，那不算被占用（重装/改回场景）
-    bool isSelf = (want == String(pushDevName));
-    if (taken && !isSelf) {
-      webLogln("🚫 改名被拒：%s 已被别的设备占用", want.c_str());
-      server.send(200, "application/json",
-                  String("{\"ok\":false,\"err\":\"名称已被占用：") + want + "\"}");
-      return;
-    }
-
-    // ⑤ 通过 → 落盘
-    strlcpy(pushDevName, want.c_str(), sizeof(pushDevName));
-    savePushConfig();
-    webLog("🏷️ 设备名已改 -> %s（服务器校验通过）\n", pushDevName);
     server.send(200, "application/json",
-                String("{\"ok\":true,\"dev\":\"") + pushDevName + "\"}");
+                String("{\"ok\":true,\"name\":\"") + pushJsonEsc(pushDevName) +
+                "\",\"dev\":\"" + pushDevId + "\"}");
   });
 
 
@@ -5354,7 +5533,8 @@ doScan();
   server.on("/push", HTTP_GET, []() {
     if (!pushConfigLoaded) loadPushConfig();
     String j = String("{\"enabled\":") + (pushEnabled ? "true" : "false");
-    j += ",\"dev\":\"" + String(pushDevName) + "\"";
+    j += ",\"dev\":\"" + String(pushDevId) + "\"";
+    j += ",\"name\":\"" + pushJsonEsc(pushDevName) + "\"";
     j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
     j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
     j += ",\"timeSynced\":" + String(timeSynced ? "true" : "false");
@@ -5433,7 +5613,8 @@ doScan();
     j += ",\"keyId\":\"" + String(devKeyId) + "\"";
     j += ",\"setAt\":" + String((unsigned long)devKeySetAt);
     j += ",\"selftest\":" + String(devKeySelfTestOk ? "true" : "false");
-    j += ",\"dev\":\"" + String(pushDevName) + "\"";
+    j += ",\"dev\":\"" + String(pushDevId) + "\"";
+    j += ",\"name\":\"" + pushJsonEsc(pushDevName) + "\"";
     j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
     j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
     j += ",\"clockOk\":" + String(time(nullptr) > 1700000000 ? "true" : "false");
