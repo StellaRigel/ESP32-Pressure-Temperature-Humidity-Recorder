@@ -3016,13 +3016,19 @@ bool     pushNeedBackfill     = false;     // 服务器提示有更早的缺口�
 uint32_t pushBackfillBeforeTs = 0;
 uint8_t  pushRunState         = 0;         // 0=空闲 1=发送中 2=退避等待
 volatile bool pushCancel      = false;     // ⚠️ 预留位：目前【无人置位】。实际收手靠 WiFi.status()!=WL_CONNECTED 与 pushEnabled 两道检查（实测够用）；要在标定/断无线时立刻收手，在这里置位即可
-// ---- 第三阶段：flash(/log.csv) 补传 ----
-//   RAM 环只有 600 条（约 5 小时），flash 上还有 14 天 → 中间缺口必须补推，
-//   否则服务器永远缺"设备开机到最早内存点"之间那一段（实测 PHT-6B4580 缺约 1100 条）。
-uint32_t pushRamFloor    = 0;      // RAM 推送下限：>0 时只推比它新的点（补传期间防跳档）
+// ---- 第三阶段：历史补传（SD 归档 / log.csv）。见 pushBackfillTick() ----
+//   为什么不需要"RAM 下限"：数据按【牌组】组织，一个牌组内部天然按 ts 递增，
+//   而且必须走完旧牌组才轮到新牌组 —— 顺序保证了，就不会跳过空洞。
 uint32_t pushFlashCursor = 0;      // flash 补传游标（NVS 键 flashSync）
 bool     pushFlashDone   = false;  // flash 已补到尽头（NVS 键 flashDone）
 uint32_t pushFlashSent   = 0;      // 本次开机补传已发条数
+// ---- SD 归档补传（第三阶段下半段：/2026-10-XX.csv，每天一个，冻结）----
+//   时间上与 /log.csv **不重叠**（归档只写过去的整天，log.csv 是最近几天）。
+//   两个牌组各用各的游标，按"从旧到新"顺序补，就不会留下空洞。
+bool     pushSdDone   = false;     // SD 归档是否已补完（NVS 键 sdDone）
+char     pushSdCur[24] = "";       // 正在补的文件名（NVS 键 sdFile）
+uint32_t pushSdCursor = 0;         // 该文件里已推到的 ts（NVS 键 sdSync）
+uint32_t pushSdSent   = 0;         // 本次开机 SD 补传已发条数
 volatile bool pushPowerWasExt = false;     // 插电触发用：上一轮是否外接电源
 uint32_t pushLastBootPushMs   = 0;         // 本会话首次「有无线」的时刻（首推基准）
 uint8_t  pushPassCount        = 0;         // 本会话已完成的同步轮次（/status 观察用）
@@ -3062,6 +3068,9 @@ void loadPushConfig() {
   pushSrvPort  = prefs.getUShort("srvPort", PUSH_SRV_PORT_DEF);
   lastSyncedTs = prefs.getULong("lastSync", 0);
   pushCursorValid = prefs.getBool("syncOk", false);
+  pushSdDone      = prefs.getBool("sdDone", false);
+  pushSdCursor    = prefs.getULong("sdSync", 0);
+  { String s = prefs.getString("sdFile", ""); strlcpy(pushSdCur, s.c_str(), sizeof(pushSdCur)); }
   pushFlashCursor = prefs.getULong("flashSync", 0);
   pushFlashDone   = prefs.getBool("flashDone", false);
   prefs.end();
@@ -3086,6 +3095,9 @@ void savePushConfig() {
   prefs.putBool("syncOk", pushCursorValid);
   prefs.putULong("flashSync", pushFlashCursor);
   prefs.putBool("flashDone", pushFlashDone);
+  prefs.putBool("sdDone", pushSdDone);
+  prefs.putULong("sdSync", pushSdCursor);
+  prefs.putString("sdFile", String(pushSdCur));
   prefs.end();
 }
 
@@ -3143,24 +3155,81 @@ static bool pushLogSeekAfter(File& f, uint32_t after) {
   return false;                                  // 没有更新的行 → 已补完
 }
 
-// 走一遍 flash 补传。返回已发送条数；skippedRows 回填"跳过多少不可信行"。
-static uint32_t pushBackfillPass(int maxRows, int* skippedRows) {
+// ---- SD 归档牌组 ----
+// 列出 SD 归档文件并排序（"2026-10-02.csv" 这种日期名，字典序 == 时间序）
+static int pushSdCollect(String* out, int maxN) {
+  int n = 0;
+  File d = SD.open("/");
+  if (!d) return 0;
+  while (n < maxN) {
+    File e = d.openNextFile();
+    if (!e) break;
+    if (!e.isDirectory()) {
+      String nm = e.name();
+      int sl = nm.lastIndexOf('/');
+      if (sl >= 0) nm = nm.substring(sl + 1);
+      if (nm.length() == 14 && nm.endsWith(".csv") && nm[4] == '-' && nm[7] == '-') {
+        out[n++] = nm;
+      }
+    }
+    e.close();
+  }
+  d.close();
+  for (int i = 1; i < n; i++) {                    // 插入排序（n 很小）
+    String key = out[i];
+    int j = i - 1;
+    while (j >= 0 && out[j] > key) { out[j + 1] = out[j]; j--; }
+    out[j + 1] = key;
+  }
+  return n;
+}
+
+// 找 afterFile 之后（不含）第一个还有可信数据的 SD 文件；exhausted=true 表示到最后一个了
+static bool pushSdFindNext(const String& afterFile, String& out, bool* exhausted) {
+  String list[32];
+  int n = pushSdCollect(list, 32);
+  int from = 0;
+  if (afterFile.length()) {
+    from = n;                                      // 找不到就当"已经是最后一个"
+    for (int i = 0; i < n; i++) { if (list[i] == afterFile) { from = i + 1; break; } }
+  }
+  for (int i = from; i < n; i++) {
+    File f = SD.open("/" + list[i], "r");
+    if (!f) continue;
+    bool has = pushLogSeekAfter(f, 0);             // 有可信时间的行吗
+    f.close();
+    if (has) { out = list[i]; if (exhausted) *exhausted = false; return true; }
+  }
+  if (exhausted) *exhausted = true;
+  return false;
+}
+
+// 选定本轮要补的牌组：1=SD 2=flash 0=都补完了（先旧后新，避免留下空洞）
+static int pushBackfillPick(String& sdOut) {
+  if (!pushSdDone) {
+    // ⚠️ 卡没挂上 ≠ 补完了：initSD() 失败只置 sdOK=false，运行中还能靠 ensureSD() 重挂。
+    //    这里若把"读不到文件"当成"已补完"，就会永久跳过整个 SD 归档。
+    if (!sdOK) return 2;                           // 卡还没就绪 → 先补 flash，等下次
+    bool ex = false;
+    if (pushSdFindNext(pushSdCur, sdOut, &ex)) return 1;
+    if (!ex) return 1;
+    pushSdDone = true;                             // 卡已挂载且没有更新的文件了 → SD 牌组补完
+    savePushConfig();
+    webLogln("📚 SD 归档：已补到最后一个文件");
+    return 2;
+  }
+  if (!pushFlashDone) return 2;
+  return 0;
+}
+
+// 走一遍某个牌组。返回已发送条数；skippedRows 回填"跳过多少不可信行"；
+// lastNonEmpty 回填"文件的最后一个有效时间戳"（收尾对齐游标用）。
+//   cur 是引用：每成功一批就前进并落盘（换页/断电都能续）。
+static uint32_t pushBackfillDeck(File& f, uint32_t& cur, const char* tag,
+                                 int maxRows, int* skippedRows, uint32_t* lastNonEmpty) {
   int skipped = 0;
   uint32_t sent = 0;
-  File f = LittleFS.open("/log.csv", "r");
-  if (!f) { if (skippedRows) *skippedRows = 0; return 0; }
-
-  if (!pushLogSeekAfter(f, pushFlashCursor)) {         // 没有更新的行 → 补完
-    f.close();
-    if (!pushFlashDone) {
-      pushFlashDone = true;
-      savePushConfig();
-      webLogln("📚 flash 补传：已到文件尾，切回内存环推送");
-    }
-    if (skippedRows) *skippedRows = 0;
-    return 0;
-  }
-
+  uint32_t lastT = 0;
   static uint32_t bTs[PUSH_BATCH_MAX];
   static float    bT[PUSH_BATCH_MAX], bH[PUSH_BATCH_MAX], bP[PUSH_BATCH_MAX];
   int n = 0, rows = 0;
@@ -3176,8 +3245,9 @@ static uint32_t pushBackfillPass(int maxRows, int* skippedRows) {
     struct tm tm;
     uint32_t t = 0;
     if (strptime(line.substring(i1 + 1, i2).c_str(), "%Y-%m-%d %H:%M:%S", &tm)) t = (uint32_t)mktime(&tm);
-    if (t < 1000000000UL) { skipped++; continue; }     // 未校时的行 → 跳过
-    if (t <= pushFlashCursor) continue;
+    if (t < 1000000000UL) { skipped++; continue; }     // 未校时的行 → 跳过（会污染服务器）
+    if (t <= cur) continue;
+    lastT = t;
     rows++;
     bTs[n] = t;
     bT[n] = parseVal(line.substring(i2 + 1, i3));
@@ -3190,19 +3260,19 @@ static uint32_t pushBackfillPass(int maxRows, int* skippedRows) {
       pushRunState = 1;
       if (!pushSendBatch(n, bTs, bT, bH, bP)) {
         pushLastOk = false; pushFailStreak++; pushRunState = 2;
-        f.close();
         if (skippedRows) *skippedRows = skipped;
+        if (lastNonEmpty) *lastNonEmpty = lastT;
         return sent;
       }
       pushLastOk = true; pushFailStreak = 0;
       pushLastOkMs = millis(); pushLastUploadMs = pushLastOkMs;
-      pushFlashCursor = bTs[n - 1];
-      lastSyncedTs = pushFlashCursor;                   // 游标同步前进（去重交给服务器）
-      pushLastUploadTs = pushFlashCursor;
+      cur = bTs[n - 1];
+      if (cur > lastSyncedTs) lastSyncedTs = cur;       // RAM 游标只许前进
+      pushLastUploadTs = cur;
       savePushConfig();
       sent += n;
-      webLog("📚 flash 补传 %d 条 → 新入库 %u（游标 %lu）\n",
-             n, (unsigned)pushLastAccepted, (unsigned long)pushFlashCursor);
+      webLog("📚 %s 补传 %d 条 → 新入库 %u（游标 %lu）\n",
+             tag, n, (unsigned)pushLastAccepted, (unsigned long)cur);
       n = 0;
       vTaskDelay(pdMS_TO_TICKS(PUSH_CHUNK_GAP_MS));     // 批间让步
     }
@@ -3215,21 +3285,85 @@ static uint32_t pushBackfillPass(int maxRows, int* skippedRows) {
     if (!pushSendBatch(n, bTs, bT, bH, bP)) {
       pushLastOk = false; pushFailStreak++; pushRunState = 2;
       if (skippedRows) *skippedRows = skipped;
+      if (lastNonEmpty) *lastNonEmpty = lastT;
       return sent;
     }
     pushLastOk = true; pushFailStreak = 0;
     pushLastOkMs = millis(); pushLastUploadMs = pushLastOkMs;
-    pushFlashCursor = bTs[n - 1];
-    lastSyncedTs = pushFlashCursor;
-    pushLastUploadTs = pushFlashCursor;
+    cur = bTs[n - 1];
+    if (cur > lastSyncedTs) lastSyncedTs = cur;
+    pushLastUploadTs = cur;
     savePushConfig();
     sent += n;
-    webLog("📚 flash 补传 %d 条 → 新入库 %u（游标 %lu）\n",
-           n, (unsigned)pushLastAccepted, (unsigned long)pushFlashCursor);
+    webLog("📚 %s 补传 %d 条 → 新入库 %u（游标 %lu）\n",
+           tag, n, (unsigned)pushLastAccepted, (unsigned long)cur);
   }
   if (skippedRows) *skippedRows = skipped;
+  if (lastNonEmpty) *lastNonEmpty = lastT;
   return sent;
 }
+
+// 补传节拍：返回 true 表示"本轮已处理，调用方应 continue"。
+//   一次只走一个牌组、单轮上限 1200 行（≈6 批），推不完 2 秒后接着来。
+static bool pushBackfillTick(void) {
+  String deck;
+  int pick = pushBackfillPick(deck);
+  if (pick == 0) return false;
+
+  int skipped = 0;
+  uint32_t lastT = 0;
+  File bf;
+  const char* tag = "flash";
+  uint32_t* cur = &pushFlashCursor;
+  if (pick == 1) {
+    bf = SD.open("/" + deck, "r");
+    tag = deck.c_str();
+    cur = &pushSdCursor;
+  } else {
+    bf = LittleFS.open("/log.csv", "r");
+  }
+
+  if (!bf) {                                        // 打不开（卡被拔了 / 文件不见了）
+    webLog("⚠️ 补传：打不开 %s，2 分钟后重试\n", tag);
+    pushRunState = 0;
+    pushReschedule(120);                            // 别死循环，缓一缓再来
+    return true;
+  }
+
+  uint32_t sent = 0;
+  sent = pushBackfillDeck(bf, *cur, tag, 1200, &skipped, &lastT);
+  if (pick == 1) pushSdSent += sent; else pushFlashSent += sent;
+
+  if (pushFailStreak > 0) {                         // 失败 → 退避后重试
+    uint32_t back = PUSH_RETRY_MIN_SEC;
+    for (uint16_t i = 1; i < pushFailStreak && back < PUSH_RETRY_MAX_SEC; i++) back *= 2;
+    if (back > PUSH_RETRY_MAX_SEC) back = PUSH_RETRY_MAX_SEC;
+    webLog("⏳ %s 补传失败（第 %u 次）→ %lus 后重试\n", tag, (unsigned)pushFailStreak, (unsigned long)back);
+    pushReschedule(back);
+    return true;
+  }
+  if (skipped) webLog("ℹ️ %s 补传跳过 %d 行（早期未校时，时间戳不可信）\n", tag, skipped);
+
+  if (sent > 0) {                                   // 这份还没走完 → 2 秒后接着补
+    pushRunState = 0;
+    pushReschedule(2);
+    return true;
+  }
+  // sent == 0 → 这份走完了
+  if (pick == 1) {                                  // SD：记下文件名，下一轮自动前进到下一份
+    if (lastT > pushSdCursor) pushSdCursor = lastT;
+    strlcpy(pushSdCur, deck.c_str(), sizeof(pushSdCur));
+    savePushConfig();
+  } else if (!pushFlashDone) {
+    pushFlashDone = true;
+    savePushConfig();
+    webLogln("📚 flash 补传：已到文件尾，切回内存环推送");
+  }
+  pushRunState = 0;
+  pushReschedule(2);                                // 接着看下一个牌组
+  return true;
+}
+
 
 // 环形缓冲里 ts > after 且时间有效的点数
 int pushCountNewer(uint32_t after) {
@@ -3237,7 +3371,7 @@ int pushCountNewer(uint32_t after) {
   int n = 0;
   for (int i = 0; i < bufferSize; i++) {
     const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
-    if (d.time > after && hasValidDate(d.time) && (!pushRamFloor || d.time > pushRamFloor)) n++;
+    if (d.time > after && hasValidDate(d.time)) n++;
   }
   return n;
 }
@@ -3251,7 +3385,6 @@ int pushCollectBatch(int maxN, uint32_t* outTs, float* outT, float* outH, float*
   for (int i = 0; i < bufferSize && n < maxN; i++) {
     const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
     if (d.time <= lastSyncedTs) continue;        // 已上传
-    if (pushRamFloor && d.time <= pushRamFloor) continue;   // flash 还没补到这儿 → 先别推，防跳档
     if (!hasValidDate(d.time))  continue;        // 时间不可信 → 不传（会永久污染服务器）
     outTs[n] = d.time; outT[n] = d.temp; outH[n] = d.humidity; outP[n] = d.pressure;
     outSeq[n] = i;
@@ -3442,29 +3575,10 @@ void pushTask(void* arg) {
     }
     pushTickForce = false;
 
-    // 游标夹紧：落后于内存窗口（重启 / 长时间断网 / 环已被覆盖）→ 退到 RAM 最老的有效点    // ---- 第三阶段：先补 flash（RAM 之外的历史），补完再走内存环 ----
-    if (!pushFlashDone) {
-      int skipped = 0;
-      uint32_t sent = pushBackfillPass(1200, &skipped);   // 单轮上限 1200 行（≈6 批）
-      pushFlashSent += sent;
-      if (pushFailStreak > 0) {                           // 失败 → 退避后重试
-        uint32_t back = PUSH_RETRY_MIN_SEC;
-        for (uint16_t i = 1; i < pushFailStreak && back < PUSH_RETRY_MAX_SEC; i++) back *= 2;
-        if (back > PUSH_RETRY_MAX_SEC) back = PUSH_RETRY_MAX_SEC;
-        webLog("⏳ flash 补传失败（第 %u 次）→ %lus 后重试\n", (unsigned)pushFailStreak, (unsigned long)back);
-        pushReschedule(back);
-        continue;
-      }
-      if (skipped) webLog("ℹ️ flash 补传跳过 %d 行（早期未校时，时间戳不可信）\n", skipped);
-      if (sent > 0) {                                     // 还有剩 → 2 秒后接着补
-        webLogln("📚 本轮 flash 补传继续（下一轮 2s 后）");
-        pushRunState = 0;
-        pushReschedule(2);
-        continue;
-      }
-    }
+    // ---- 第三阶段：补历史（SD 归档 → flash → RAM），先旧后新，一次只走一个牌组 ----
+    if (pushBackfillTick()) continue;
 
-
+    // 游标夹紧：落后于内存窗口（重启 / 长时间断网 / 环已被覆盖）→ 退到 RAM 最老的有效点
     pushClampCursor();
 
     if (pushCountNewer(lastSyncedTs) <= 0) {       // 无待传：不算失败，直接排下一轮
