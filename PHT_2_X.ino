@@ -3016,6 +3016,13 @@ bool     pushNeedBackfill     = false;     // 服务器提示有更早的缺口�
 uint32_t pushBackfillBeforeTs = 0;
 uint8_t  pushRunState         = 0;         // 0=空闲 1=发送中 2=退避等待
 volatile bool pushCancel      = false;     // ⚠️ 预留位：目前【无人置位】。实际收手靠 WiFi.status()!=WL_CONNECTED 与 pushEnabled 两道检查（实测够用）；要在标定/断无线时立刻收手，在这里置位即可
+// ---- 第三阶段：flash(/log.csv) 补传 ----
+//   RAM 环只有 600 条（约 5 小时），flash 上还有 14 天 → 中间缺口必须补推，
+//   否则服务器永远缺"设备开机到最早内存点"之间那一段（实测 PHT-6B4580 缺约 1100 条）。
+uint32_t pushRamFloor    = 0;      // RAM 推送下限：>0 时只推比它新的点（补传期间防跳档）
+uint32_t pushFlashCursor = 0;      // flash 补传游标（NVS 键 flashSync）
+bool     pushFlashDone   = false;  // flash 已补到尽头（NVS 键 flashDone）
+uint32_t pushFlashSent   = 0;      // 本次开机补传已发条数
 volatile bool pushPowerWasExt = false;     // 插电触发用：上一轮是否外接电源
 uint32_t pushLastBootPushMs   = 0;         // 本会话首次「有无线」的时刻（首推基准）
 uint8_t  pushPassCount        = 0;         // 本会话已完成的同步轮次（/status 观察用）
@@ -3055,6 +3062,8 @@ void loadPushConfig() {
   pushSrvPort  = prefs.getUShort("srvPort", PUSH_SRV_PORT_DEF);
   lastSyncedTs = prefs.getULong("lastSync", 0);
   pushCursorValid = prefs.getBool("syncOk", false);
+  pushFlashCursor = prefs.getULong("flashSync", 0);
+  pushFlashDone   = prefs.getBool("flashDone", false);
   prefs.end();
 
   if (dn.length() > 0) { strlcpy(pushDevName, dn.c_str(), sizeof(pushDevName)); }
@@ -3075,6 +3084,8 @@ void savePushConfig() {
   prefs.putUShort("srvPort", pushSrvPort);
   prefs.putULong("lastSync", lastSyncedTs);
   prefs.putBool("syncOk", pushCursorValid);
+  prefs.putULong("flashSync", pushFlashCursor);
+  prefs.putBool("flashDone", pushFlashDone);
   prefs.end();
 }
 
@@ -3098,13 +3109,135 @@ static String pushJsonEsc(const char* s) {
   return o;
 }
 
+// ==================== flash(/log.csv) 第三阶段补传 ====================
+//   依据：docs/推送功能设计.md 四、数据源分层（RAM → flash(/log.csv) → SD 归档）
+//
+//   为什么必须做：RAM 环只有 600 条（约 5 小时），开机前的历史在 /log.csv 里。
+//   只推 RAM 的话，服务器永远缺"最早内存点之前"那一段（实测 PHT-6B4580 缺约 1100 条）。
+//
+//   三条约束：
+//     ① 流式读文件，不一次性读进内存（RAM 紧张，log.csv 可能上万行）；
+//     ② 只推【时间戳有效】的行 —— 早期没校时的行存成 "HH:MM:SS"（<1e9），
+//        推上去会永久污染服务器时间轴，必须跳过；
+//     ③ 每轮有上限（行数），推不完下轮接着推，绝不把任务占死。
+
+// 在 /log.csv 里找第一行 ts > after，并把文件指针留在该行行首
+static bool pushLogSeekAfter(File& f, uint32_t after) {
+  f.seek(0);
+  if (!f.available()) return false;
+  f.readStringUntil('\n');                       // 跳过表头
+  while (f.available()) {
+    int start = f.position();
+    String line = f.readStringUntil('\n');
+    if (line.length() < 8) continue;
+    int i1 = line.indexOf(',');
+    int i2 = line.indexOf(',', i1 + 1);
+    if (i1 < 0 || i2 < 0) continue;
+    struct tm tm;
+    if (strptime(line.substring(i1 + 1, i2).c_str(), "%Y-%m-%d %H:%M:%S", &tm)) {
+      uint32_t t = (uint32_t)mktime(&tm);
+      if (t < 1000000000UL) continue;            // 时间不可信
+      if (t > after) { f.seek(start); return true; }
+    }
+  }
+  return false;                                  // 没有更新的行 → 已补完
+}
+
+// 走一遍 flash 补传。返回已发送条数；skippedRows 回填"跳过多少不可信行"。
+static uint32_t pushBackfillPass(int maxRows, int* skippedRows) {
+  int skipped = 0;
+  uint32_t sent = 0;
+  File f = LittleFS.open("/log.csv", "r");
+  if (!f) { if (skippedRows) *skippedRows = 0; return 0; }
+
+  if (!pushLogSeekAfter(f, pushFlashCursor)) {         // 没有更新的行 → 补完
+    f.close();
+    if (!pushFlashDone) {
+      pushFlashDone = true;
+      savePushConfig();
+      webLogln("📚 flash 补传：已到文件尾，切回内存环推送");
+    }
+    if (skippedRows) *skippedRows = 0;
+    return 0;
+  }
+
+  static uint32_t bTs[PUSH_BATCH_MAX];
+  static float    bT[PUSH_BATCH_MAX], bH[PUSH_BATCH_MAX], bP[PUSH_BATCH_MAX];
+  int n = 0, rows = 0;
+
+  while (f.available() && rows < maxRows) {
+    String line = f.readStringUntil('\n');
+    if (line.length() < 8) continue;
+    int i1 = line.indexOf(',');
+    int i2 = line.indexOf(',', i1 + 1);
+    int i3 = line.indexOf(',', i2 + 1);
+    int i4 = line.indexOf(',', i3 + 1);
+    if (i1 < 0 || i2 < 0 || i3 < 0 || i4 < 0) continue;
+    struct tm tm;
+    uint32_t t = 0;
+    if (strptime(line.substring(i1 + 1, i2).c_str(), "%Y-%m-%d %H:%M:%S", &tm)) t = (uint32_t)mktime(&tm);
+    if (t < 1000000000UL) { skipped++; continue; }     // 未校时的行 → 跳过
+    if (t <= pushFlashCursor) continue;
+    rows++;
+    bTs[n] = t;
+    bT[n] = parseVal(line.substring(i2 + 1, i3));
+    bH[n] = parseVal(line.substring(i3 + 1, i4));
+    int i5 = line.indexOf(',', i4 + 1);
+    bP[n] = parseVal((i5 < 0) ? line.substring(i4 + 1) : line.substring(i4 + 1, i5));
+    n++;
+    if (n >= PUSH_BATCH_MAX) {                          // 攒满一批就发
+      pushLastTryMs = millis();
+      pushRunState = 1;
+      if (!pushSendBatch(n, bTs, bT, bH, bP)) {
+        pushLastOk = false; pushFailStreak++; pushRunState = 2;
+        f.close();
+        if (skippedRows) *skippedRows = skipped;
+        return sent;
+      }
+      pushLastOk = true; pushFailStreak = 0;
+      pushLastOkMs = millis(); pushLastUploadMs = pushLastOkMs;
+      pushFlashCursor = bTs[n - 1];
+      lastSyncedTs = pushFlashCursor;                   // 游标同步前进（去重交给服务器）
+      pushLastUploadTs = pushFlashCursor;
+      savePushConfig();
+      sent += n;
+      webLog("📚 flash 补传 %d 条 → 新入库 %u（游标 %lu）\n",
+             n, (unsigned)pushLastAccepted, (unsigned long)pushFlashCursor);
+      n = 0;
+      vTaskDelay(pdMS_TO_TICKS(PUSH_CHUNK_GAP_MS));     // 批间让步
+    }
+  }
+  f.close();
+
+  if (n > 0) {                                          // 尾批
+    pushLastTryMs = millis();
+    pushRunState = 1;
+    if (!pushSendBatch(n, bTs, bT, bH, bP)) {
+      pushLastOk = false; pushFailStreak++; pushRunState = 2;
+      if (skippedRows) *skippedRows = skipped;
+      return sent;
+    }
+    pushLastOk = true; pushFailStreak = 0;
+    pushLastOkMs = millis(); pushLastUploadMs = pushLastOkMs;
+    pushFlashCursor = bTs[n - 1];
+    lastSyncedTs = pushFlashCursor;
+    pushLastUploadTs = pushFlashCursor;
+    savePushConfig();
+    sent += n;
+    webLog("📚 flash 补传 %d 条 → 新入库 %u（游标 %lu）\n",
+           n, (unsigned)pushLastAccepted, (unsigned long)pushFlashCursor);
+  }
+  if (skippedRows) *skippedRows = skipped;
+  return sent;
+}
+
 // 环形缓冲里 ts > after 且时间有效的点数
 int pushCountNewer(uint32_t after) {
   if (!buffer || bufferSize <= 0) return 0;
   int n = 0;
   for (int i = 0; i < bufferSize; i++) {
     const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
-    if (d.time > after && hasValidDate(d.time)) n++;
+    if (d.time > after && hasValidDate(d.time) && (!pushRamFloor || d.time > pushRamFloor)) n++;
   }
   return n;
 }
@@ -3118,6 +3251,7 @@ int pushCollectBatch(int maxN, uint32_t* outTs, float* outT, float* outH, float*
   for (int i = 0; i < bufferSize && n < maxN; i++) {
     const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
     if (d.time <= lastSyncedTs) continue;        // 已上传
+    if (pushRamFloor && d.time <= pushRamFloor) continue;   // flash 还没补到这儿 → 先别推，防跳档
     if (!hasValidDate(d.time))  continue;        // 时间不可信 → 不传（会永久污染服务器）
     outTs[n] = d.time; outT[n] = d.temp; outH[n] = d.humidity; outP[n] = d.pressure;
     outSeq[n] = i;
@@ -3308,7 +3442,29 @@ void pushTask(void* arg) {
     }
     pushTickForce = false;
 
-    // 游标夹紧：落后于内存窗口（重启 / 长时间断网 / 环已被覆盖）→ 退到 RAM 最老的有效点
+    // 游标夹紧：落后于内存窗口（重启 / 长时间断网 / 环已被覆盖）→ 退到 RAM 最老的有效点    // ---- 第三阶段：先补 flash（RAM 之外的历史），补完再走内存环 ----
+    if (!pushFlashDone) {
+      int skipped = 0;
+      uint32_t sent = pushBackfillPass(1200, &skipped);   // 单轮上限 1200 行（≈6 批）
+      pushFlashSent += sent;
+      if (pushFailStreak > 0) {                           // 失败 → 退避后重试
+        uint32_t back = PUSH_RETRY_MIN_SEC;
+        for (uint16_t i = 1; i < pushFailStreak && back < PUSH_RETRY_MAX_SEC; i++) back *= 2;
+        if (back > PUSH_RETRY_MAX_SEC) back = PUSH_RETRY_MAX_SEC;
+        webLog("⏳ flash 补传失败（第 %u 次）→ %lus 后重试\n", (unsigned)pushFailStreak, (unsigned long)back);
+        pushReschedule(back);
+        continue;
+      }
+      if (skipped) webLog("ℹ️ flash 补传跳过 %d 行（早期未校时，时间戳不可信）\n", skipped);
+      if (sent > 0) {                                     // 还有剩 → 2 秒后接着补
+        webLogln("📚 本轮 flash 补传继续（下一轮 2s 后）");
+        pushRunState = 0;
+        pushReschedule(2);
+        continue;
+      }
+    }
+
+
     pushClampCursor();
 
     if (pushCountNewer(lastSyncedTs) <= 0) {       // 无待传：不算失败，直接排下一轮
