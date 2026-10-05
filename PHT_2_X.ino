@@ -509,6 +509,9 @@ void     calLoadTable();
 uint8_t  calPctFromVolt(float v);
 bool     calBuildTable(bool partial);
 uint32_t calFullHeldMs();
+// 直连工具链构建（_build/）没有 ctags 自动原型，这两条必须自己写：
+//   PowerState 的定义在后面，但 applyChargeStrategy() 的调用点更靠前。
+void     applyChargeStrategy(const PowerState& ps);
 void     serviceBattAnchor();
 // V2.1.1 低电三档跟本机表走（2026-09-29）：开机载表后刷新 battArchiveV/battStopV/battSleepV
 void     updateBattThresholds();
@@ -530,6 +533,10 @@ PowerState readPowerState();
 void _fallbackToRtcTime();
 bool syncTimeFromNTPBlocking(unsigned long maxMs);
 void ntpStart();
+// 归档/缓冲相关（定义在文件后半部；enterDeepSleepIfNeeded 等早期函数会先用到）
+void     archivePump();
+void     checkAndArchive();
+void     loadBufferFromFlash();
 void serviceNtpSync();
 void serviceNtpDailyCheck();
 bool wifiPickBest(bool requireInRange);
@@ -2110,6 +2117,11 @@ bool writeLineToSDByDate(const String& line, const String& header,
 //   运行中重新挂载 SD 不会打扰屏幕。
 // ⚠️ SD.begin() 是**阻塞**的（正常约 100~300ms，坏卡可能到秒级）→ 绝不能放进 30s 采样路径，
 //   只放在上面那三个低频/人工入口。
+// 前置声明：initSD() 的实现要到加载缓冲那段（约 2700 行）才出现。
+//   Arduino IDE 会自动生成原型，但本工程的直连工具链构建（_build/gen-protos.js）
+//   只在【最后一个类型定义之后】插原型 → 这里必须自己声明。
+void initSD();
+
 bool ensureSD() {
   if (sdOK) return true;
   initSD();                    // 内部会打「✅ SD卡已就绪」或「⚠️ SD卡初始化失败」
@@ -2956,13 +2968,25 @@ void saveDeviceMode(uint8_t m) {
 #define PUSH_SRV_HOST_DEF     "192.168.1.100"
 #define PUSH_SRV_PORT_DEF     8080
 #define PUSH_API_PATH         "/api/v1/samples"
+#define PUSH_RETRY_MIN_SEC    30        // 失败退避起点（30 → 60 → … → 上限）
+#define PUSH_RETRY_MAX_SEC    600       // 失败退避上限 10 分钟
+#define PUSH_TASK_STACK       8192      // HTTPClient 在这个任务的栈上干活（实测够）
+#define PUSH_TASK_PRIO        1         // 与 loop 任务同优先级：靠 tick 时间片轮转，既不抢占也不饿死
+#define PUSH_FW_VER           "2.2.0-dev"   // 随推送上报，便于服务器分辨固件代次
 
-// ⚠️ token 绝不写进源码（仓库公开）。构建时注入：
-//    arduino-cli compile --build-property "compiler.cpp.extra_flags=-DPHT_API_TOKEN=..."
+// ⚠️ token 绝不写进源码（仓库公开）。构建时以宏注入：
+//    构建脚本写进 build_opt.h：-DPHT_API_TOKEN_RAW=<64 位十六进制>
 //    未注入时为空 → 不发该请求头（仅在服务器 token 也留空时可用）
-#ifndef PHT_API_TOKEN
-#define PHT_API_TOKEN ""
+// 注意用【两层字符串化】：token 是 0e27... 这种以数字开头的十六进制串，
+//   直接写 -DPHT_API_TOKEN="0e27..." 有时会被 gcc 的 @file 参数文件吞掉引号，
+//   变成"数字字面量后缀"报错。用 RAW + 字符串化强制按标识符解析，只有纯字母
+//   数字的 token 才能这样用（我们的 token 正好满足）。
+#ifndef PHT_API_TOKEN_RAW
+#define PHT_API_TOKEN_RAW
 #endif
+#define PHT_STR2(x) #x
+#define PHT_STR(x)  PHT_STR2(x)
+#define PHT_API_TOKEN PHT_STR(PHT_API_TOKEN_RAW)
 
 bool     pushEnabled    = true;
 char     pushDevName[33] = {0};          // 设备 ID（NVS；空 = 用默认名）
@@ -2973,6 +2997,21 @@ volatile bool pushLastOk = false;        // 最近一次发送是否成功
 uint32_t pushLastTryMs = 0, pushLastOkMs = 0;
 uint16_t pushFailStreak = 0;
 bool     pushConfigLoaded = false;
+
+// ---- 第二阶段（发送）运行时状态 ----
+TaskHandle_t pushTaskHandle   = nullptr;   // 独立推送任务（HTTP 只在这里阻塞）
+volatile bool pushTickForce   = false;     // 主循环 → 任务：立刻试一轮（手动/插电/首次联网）
+uint32_t pushNextAtMs         = 0;         // 下一轮同步时刻（millis 基准；0 = 尚未排程）
+uint32_t pushLastUploadTs     = 0;         // 最近一批成功上传的最大 ts
+uint16_t pushLastAccepted     = 0;         // 最近一批服务器新入库条数
+uint32_t pushLastUploadMs     = 0;
+bool     pushNeedBackfill     = false;     // 服务器提示有更早的缺口（第二阶段 CSV/SD 补传用）
+uint32_t pushBackfillBeforeTs = 0;
+uint8_t  pushRunState         = 0;         // 0=空闲 1=发送中 2=退避等待
+volatile bool pushCancel      = false;     // 断开无线/标定开始时置位 → 让任务尽快收手
+volatile bool pushPowerWasExt = false;     // 插电触发用：上一轮是否外接电源
+uint32_t pushLastBootPushMs   = 0;         // 本会话首次「有无线」的时刻（首推基准）
+uint8_t  pushPassCount        = 0;         // 本会话已完成的同步轮次（/status 观察用）
 
 // 设备名默认值：PHT-<MAC后6位>（唯一、免配置）
 void pushDefaultDevName(char* out, size_t n) {
@@ -3028,6 +3067,259 @@ void savePushConfig() {
   prefs.putUShort("srvPort", pushSrvPort);
   prefs.putULong("lastSync", lastSyncedTs);
   prefs.end();
+}
+
+// ==================== 推送：发送引擎（第二阶段，2026-10-05）====================
+//   设计：docs/推送功能设计.md 三/四节 —— 主循环只做微秒级判断，HTTP 全在独立任务里。
+//
+//   ⚠️ 三条硬约束（踩过的坑，别改）：
+//     ① HTTP 绝不能进主循环（项目已因「阻塞式串口输出」卡过主循环，HTTP 慢得多）；
+//     ② 采样节拍不能被推送拖慢 —— 批间 sleep + 同优先级时间片轮转；
+//     ③ 时间不可信（未同步 NTP/RTC）时**绝不推送** —— 时间戳是服务器主键，发脏了就永久错位。
+
+// 设备 id 的 JSON 转义（名称走白名单校验，实际逃逸不掉；这里仍防一手）
+static String pushJsonEsc(const char* s) {
+  String o; o.reserve(strlen(s) + 4);
+  for (const char* p = s; *p; ++p) {
+    char c = *p;
+    if (c == '"' || c == '\\') { o += '\\'; o += c; }
+    else if ((unsigned char)c < 0x20) { o += '?'; }
+    else o += c;
+  }
+  return o;
+}
+
+// 环形缓冲里 ts > after 且时间有效的点数
+int pushCountNewer(uint32_t after) {
+  if (!buffer || bufferSize <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < bufferSize; i++) {
+    const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
+    if (d.time > after && hasValidDate(d.time)) n++;
+  }
+  return n;
+}
+
+// 取一批待传点（ts > lastSyncedTs 且时间有效）。
+//   OUT : outSeq[i] = 在环形缓冲里的**序号**（0 = 最老），成功提交时用它推游标。
+//   返回：实际条数（0 = 没有待传）
+int pushCollectBatch(int maxN, uint32_t* outTs, float* outT, float* outH, float* outP, int* outSeq) {
+  if (!buffer || bufferSize <= 0 || maxN <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < bufferSize && n < maxN; i++) {
+    const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
+    if (d.time <= lastSyncedTs) continue;        // 已上传
+    if (!hasValidDate(d.time))  continue;        // 时间不可信 → 不传（会永久污染服务器）
+    outTs[n] = d.time; outT[n] = d.temp; outH[n] = d.humidity; outP[n] = d.pressure;
+    outSeq[n] = i;
+    n++;
+  }
+  return n;
+}
+
+// 组 JSON 并 POST。成功返回 true，并把响应里的 accepted / needBackfillBefore 落进全局。
+//   只在推送任务里调用（这里会阻塞到超时）。
+bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, const float* p) {
+  if (n <= 0) return false;
+
+  String body;
+  body.reserve((size_t)n * 90 + 128);
+  body  = "{\"device\":\"" + pushJsonEsc(pushDevName) + "\",\"fw\":\"" + PUSH_FW_VER + "\",\"samples\":[";
+  char item[128];
+  for (int i = 0; i < n; i++) {
+    int k = snprintf(item, sizeof(item), "%s{\"ts\":%lu", (i ? "," : ""), (unsigned long)ts[i]);
+    if (!isnan(t[i])) k += snprintf(item + k, sizeof(item) - k, ",\"t\":%.2f", t[i]);
+    if (!isnan(h[i])) k += snprintf(item + k, sizeof(item) - k, ",\"h\":%.2f", h[i]);
+    if (!isnan(p[i])) k += snprintf(item + k, sizeof(item) - k, ",\"p\":%.2f", p[i]);
+    snprintf(item + k, sizeof(item) - k, ",\"mode\":%u}", (unsigned)deviceMode);
+    body += item;
+  }
+  body += "]}";
+
+  WiFiClient c;
+  HTTPClient http;
+  http.setConnectTimeout(4000);            // 连接（WiFi 正常时 <100ms）
+  http.setTimeout(PUSH_HTTP_TIMEOUT_MS);   // 读写
+  http.setReuse(false);                    // 每批独立连接：不用长连接，省得服务器/中间设备踢我们
+
+  String url = String("http://") + pushSrvHost + ":" + String(pushSrvPort) + PUSH_API_PATH;
+  if (!http.begin(c, url)) {
+    webLogln("⚠️ 推送：URL 解析失败（%s）", url.c_str());
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+  // token 为空 = 不发该头（只有服务器也没设 token 时才成立）
+  const char* tok = PHT_API_TOKEN;
+  if (tok && tok[0]) http.addHeader("X-PHT-Token", tok);
+
+  int code = http.POST((uint8_t*)body.c_str(), body.length());
+  String resp = (code > 0) ? http.getString() : String();
+  http.end();
+
+  if (code != 200) {
+    if (code == 401)      webLogln("❌ 推送被拒：401（token 不对 —— 固件注入的 PHT_API_TOKEN 与服务器 /etc/pht-server.env 不一致）");
+    else if (code == 429) webLogln("❌ 推送被限速：429（%s）", resp.substring(0, 80).c_str());
+    else if (code < 0)    webLogln("❌ 推送失败：%s（%s:%u 不可达？）", http.errorToString(code).c_str(),
+                                   pushSrvHost, (unsigned)pushSrvPort);
+    else                  webLogln("❌ 推送失败：HTTP %d %s", code, resp.substring(0, 80).c_str());
+    return false;
+  }
+
+  // 解析响应（结构稳定，手扫字段，不引 JSON 库）
+  long accepted = -1;
+  int ka = resp.indexOf("\"accepted\"");
+  if (ka >= 0) { int cc = resp.indexOf(':', ka); if (cc > 0) accepted = resp.substring(cc + 1).toInt(); }
+  pushLastAccepted = (accepted > 0) ? (uint16_t)accepted : 0;
+  int kb = resp.indexOf("\"needBackfillBefore\"");
+  if (kb >= 0) {
+    int cc = resp.indexOf(':', kb);
+    if (cc > 0) {
+      long bf = resp.substring(cc + 1).toInt();
+      if (bf > 1000000000) { pushNeedBackfill = true; pushBackfillBeforeTs = (uint32_t)bf; }
+      else                 { pushNeedBackfill = false; pushBackfillBeforeTs = 0; }
+    }
+  }
+  return true;
+}
+
+void pushReschedule(uint32_t delaySec) {
+  if (delaySec == 0) delaySec = pushJitterSec();       // 首推也带抖动，多设备不同时打服务器
+  pushNextAtMs = millis() + delaySec * 1000UL;
+  if (pushNextAtMs == 0) pushNextAtMs = 1;
+}
+
+// 主循环勾子：**只做微秒级判断**（readPowerState 本身很便宜，项目里每圈都在调）。
+//   触发：① 插电瞬间  ② 本会话首次联网  ③ 每 15 分钟（由任务排程）
+void servicePushTick() {
+  if (!pushEnabled) return;
+
+  bool ext = readPowerState().powered;
+  if (ext && !pushPowerWasExt) {          // 决策 6：插电立刻同步一次
+    pushTickForce = true;
+    webLogln("🔌 检测到插电 → 触发一次推送检查");
+  }
+  pushPowerWasExt = ext;
+
+  bool wifi = (WiFi.status() == WL_CONNECTED);
+  if (wifi && pushLastBootPushMs == 0) {  // 本会话首次联网 → 先同步一次积压
+    pushLastBootPushMs = millis() ? millis() : 1;
+    pushTickForce = true;
+  }
+  if (pushTickForce) return;              // 已经要求任务去干，不必再判断
+  if (!wifi) pushNextAtMs = 0;            // 断线 → 清排程；下次联网由上面的首推分支接手
+}
+
+// 一轮同步：循环取批 + 发送，直到没有待传或失败。
+//   返回 1 = 跑完，0 = 无待传，-1 = 失败（退避由调用者处理）
+int pushRunPass() {
+  if (!pushEnabled) return 0;
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  static uint32_t bTs[PUSH_BATCH_MAX];
+  static float    bT[PUSH_BATCH_MAX], bH[PUSH_BATCH_MAX], bP[PUSH_BATCH_MAX];
+  static int      bSeq[PUSH_BATCH_MAX];
+
+  int batches = 0;
+  while (true) {
+    if (!pushEnabled || pushCancel || WiFi.status() != WL_CONNECTED) return -1;
+    if (batches >= 40) return 1;                   // 单轮上限 8000 条，防一次跑太久
+    int n = pushCollectBatch(PUSH_BATCH_MAX, bTs, bT, bH, bP, bSeq);
+    if (n <= 0) return 1;                          // 没有待传 → 本轮完成
+
+    pushLastTryMs = millis();
+    pushRunState = 1;
+    uint32_t t0 = millis();
+    bool ok = pushSendBatch(n, bTs, bT, bH, bP);
+    uint32_t dt = millis() - t0;
+
+    if (!ok) {
+      pushLastOk = false;
+      pushFailStreak++;
+      pushRunState = 2;
+      return -1;
+    }
+
+    pushLastOk = true;
+    pushFailStreak = 0;
+    pushLastOkMs = millis();
+    pushLastUploadMs = pushLastOkMs;
+    // 只有【整批成功】才推游标 + 落 NVS → 中途失败可安全重发（服务器按 ts 幂等）
+    lastSyncedTs = bTs[n - 1];
+    pushLastUploadTs = lastSyncedTs;
+    savePushConfig();
+    batches++;
+
+    webLog("📤 推送 %d 条 → 新入库 %u，耗时 %lums（游标 %lu）\n",
+           n, (unsigned)pushLastAccepted, (unsigned long)dt, (unsigned long)lastSyncedTs);
+
+    vTaskDelay(pdMS_TO_TICKS(PUSH_CHUNK_GAP_MS));  // 批间让步：压低 WiFi 占空比
+  }
+}
+
+// 独立推送任务：只在这里阻塞（连接 + 上传）。优先级与 loop 相同 → tick 轮转，不抢占采样。
+void pushTask(void* arg) {
+  (void)arg;
+  vTaskDelay(pdMS_TO_TICKS(8000));                 // 等系统起稳（WiFi/RTC/NTP）
+  webLogln("📮 推送任务已启动（%d 分钟一次 + MAC 抖动，失败退避 %d~%ds）",
+           PUSH_INTERVAL_SEC / 60, PUSH_RETRY_MIN_SEC, PUSH_RETRY_MAX_SEC);
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(500));                // 廉价轮询；light sleep 期间会让路，醒来立刻恢复
+    if (!pushEnabled || pushCancel) { pushRunState = 0; continue; }
+
+    bool due = pushTickForce;
+    if (!due && pushNextAtMs != 0) due = ((int32_t)(millis() - pushNextAtMs) >= 0);
+    if (!due) continue;
+    if (WiFi.status() != WL_CONNECTED) { pushRunState = 0; continue; }   // 没网先不动，等 WiFi
+
+    if (!timeSynced || !hasValidDate((uint32_t)time(nullptr))) {         // 时间不可信 → 绝不推
+      pushTickForce = false; pushRunState = 0;
+      pushNextAtMs = millis() + 30000UL;                                 // 30s 后再看
+      continue;
+    }
+    pushTickForce = false;
+
+    // 游标落后于内存窗口（重启 / 长时间断网）→ 退到 RAM 最老的有效点，别空转
+    if (bufferSize > 0) {
+      uint32_t oldestTs = 0;
+      for (int i = 0; i < bufferSize; i++) {
+        const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
+        if (hasValidDate(d.time) && d.time > oldestTs && (oldestTs == 0 || d.time < oldestTs)) oldestTs = d.time;
+      }
+      if (oldestTs && oldestTs > lastSyncedTs) {
+        if (lastSyncedTs > 0 && (oldestTs - lastSyncedTs) > (uint32_t)(INTERVAL_SEC * 3)) {
+          webLog("⚠️ 推送游标落后内存窗口：跳过 %lu 秒空档（%.1f 小时）—— 只推 RAM 里现有的点\n",
+                 (unsigned long)(oldestTs - lastSyncedTs), (oldestTs - lastSyncedTs) / 3600.0f);
+        }
+        lastSyncedTs = oldestTs - 1;               // -1 保证最老点本身也被收集到
+      }
+    }
+
+    if (pushCountNewer(lastSyncedTs) <= 0) {       // 无待传：不算失败，直接排下一轮
+      pushLastOk = true;
+      pushRunState = 0;
+      pushPassCount++;
+      pushReschedule(PUSH_INTERVAL_SEC + pushJitterSec());
+      continue;
+    }
+
+    int r = pushRunPass();
+
+    if (r == 1) {                                  // ✅ 本轮推完
+      pushRunState = 0;
+      pushPassCount++;
+      if (pushNeedBackfill) {
+        webLog("ℹ️ 服务器提示还有更早的缺口（早于 %lu）—— 属第二阶段（CSV/SD 补传）\n",
+               (unsigned long)pushBackfillBeforeTs);
+      }
+      pushReschedule(PUSH_INTERVAL_SEC + pushJitterSec());
+    } else {                                       // ❌ 失败 → 指数退避
+      uint32_t back = PUSH_RETRY_MIN_SEC;
+      for (uint16_t i = 1; i < pushFailStreak && back < PUSH_RETRY_MAX_SEC; i++) back *= 2;
+      if (back > PUSH_RETRY_MAX_SEC) back = PUSH_RETRY_MAX_SEC;
+      webLog("⏳ 推送失败（第 %u 次）→ %lus 后重试\n", (unsigned)pushFailStreak, (unsigned long)back);
+      pushReschedule(back);
+    }
+  }
 }
 
 // 当前无线状态 -> UI 图标
@@ -3114,7 +3406,8 @@ String buildStatusJson(bool overBLE) {
                           ",\"failStreak\":" + String(pushFailStreak) +
                           ",\"jitter\":" + String(pushJitterSec()) +
                           ",\"lastTrySec\":" + String(pushLastTryMs ? (millis() - pushLastTryMs) / 1000 : 0) +
-                          ",\"lastOkSec\":" + String(pushLastOkMs ? (millis() - pushLastOkMs) / 1000 : 0) + "}" +
+                          ",\"lastOkSec\":" + String(pushLastOkMs ? (millis() - pushLastOkMs) / 1000 : 0) +
+                          ",\"state\":" + String(pushRunState) +                           ",\"pending\":" + String(pushCountNewer(lastSyncedTs)) +                           ",\"passes\":" + String(pushPassCount) +                           ",\"lastUploadTs\":" + String(pushLastUploadTs) +                           ",\"lastAccepted\":" + String(pushLastAccepted) +                           ",\"lastUploadSec\":" + String(pushLastUploadMs ? (millis() - pushLastUploadMs) / 1000 : 0) +                           ",\"nextInSec\":" + String(pushNextAtMs ? (int32_t)(pushNextAtMs - millis()) / 1000 : -1) +                           ",\"needBackfill\":" + (pushNeedBackfill ? "true" : "false") +                           ",\"backfillBefore\":" + String(pushBackfillBeforeTs) +                           ",\"bufN\":" + String(bufferSize) +                           ",\"token\":" + (PHT_API_TOKEN[0] ? "true" : "false") + "}" +
              ",\"pr1Raw\":" + String(digitalRead(PIN_PR1)) +
              ",\"pr1Safe\":" + ((!pr1BatteryDirect || ps.battVolt <= PR1_HARD_MAX) ? "true" : "false") +
              ",\"pr1Thr\":{\"on\":" + String(PR1_ON_V, 2) +
@@ -4615,6 +4908,81 @@ doScan();
   });
 
 
+  // ---- 推送：状态查询 + 手动触发 + 配置（v2.2 第二阶段，2026-10-05）----
+  //   手动触发是联调的关键：不用等 15 分钟，也不受"服务器不可达就拒绝"那套限制
+  //   （这里失败只影响这一次推送，不会写坏任何配置）。
+  server.on("/push", HTTP_GET, []() {
+    if (!pushConfigLoaded) loadPushConfig();
+    String j = String("{\"enabled\":") + (pushEnabled ? "true" : "false");
+    j += ",\"dev\":\"" + String(pushDevName) + "\"";
+    j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
+    j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+    j += ",\"timeSynced\":" + String(timeSynced ? "true" : "false");
+    j += ",\"tokenInjected\":" + String(PHT_API_TOKEN[0] ? "true" : "false");
+    j += ",\"bufN\":" + String(bufferSize);
+    j += ",\"lastSyncedTs\":" + String(lastSyncedTs);
+    j += ",\"pending\":" + String(pushCountNewer(lastSyncedTs));
+    j += ",\"lastUploadTs\":" + String(pushLastUploadTs);
+    j += ",\"lastAccepted\":" + String(pushLastAccepted);
+    j += ",\"lastOk\":" + String(pushLastOk ? "true" : "false");
+    j += ",\"state\":" + String(pushRunState);
+    j += ",\"failStreak\":" + String(pushFailStreak);
+    j += ",\"passes\":" + String(pushPassCount);
+    j += ",\"nextInSec\":" + String(pushNextAtMs ? (int32_t)(pushNextAtMs - millis()) / 1000 : -1);
+    j += ",\"needBackfill\":" + String(pushNeedBackfill ? "true" : "false");
+    j += ",\"backfillBefore\":" + String(pushBackfillBeforeTs) + "}";
+    server.send(200, "application/json", j);
+  });
+
+  // 手动触发一轮同步。?full=1 → 从内存里最老的点重推（游标回退，用于验收/补推）
+  server.on("/push", HTTP_POST, []() {
+    if (!pushEnabled) {
+      server.send(200, "application/json", "{\"ok\":false,\"err\":\"推送已关闭\"}");
+      return;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      server.send(200, "application/json", "{\"ok\":false,\"err\":\"未连 WiFi，无法推送\"}");
+      return;
+    }
+    if (!timeSynced) {
+      server.send(200, "application/json", "{\"ok\":false,\"err\":\"时间未同步（时间戳是服务器主键，拒绝推脏数据）\"}");
+      return;
+    }
+    bool full = (server.arg("full") == "1");
+    uint32_t from = lastSyncedTs;
+    if (full) {
+      uint32_t oldest = 0;
+      for (int i = 0; i < bufferSize; i++) {
+        const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
+        if (hasValidDate(d.time) && (oldest == 0 || d.time < oldest)) oldest = d.time;
+      }
+      if (oldest) lastSyncedTs = oldest - 1;
+    }
+    pushTickForce = true;                       // 交给任务去干（HTTP 不进主循环）
+    pushNextAtMs = 0;
+    webLog("🔧 手动推送触发（%s，游标 %lu）\n", full ? "全量重推" : "增量", (unsigned long)lastSyncedTs);
+    String j = String("{\"ok\":true,\"queued\":true,\"full\":") + (full ? "true" : "false");
+    j += ",\"fromTs\":" + String(from) + ",\"pending\":" + String(pushCountNewer(lastSyncedTs)) + "}";
+    server.send(200, "application/json", j);
+  });
+
+  // 推送配置：开关 / 服务器地址（设备名走 /devname，那里有重名校验）
+  server.on("/pushcfg", HTTP_POST, []() {
+    if (server.hasArg("on")) pushEnabled = (server.arg("on") == "1");
+    if (server.hasArg("host")) {
+      String h = server.arg("host"); h.trim();
+      if (h.length() > 0 && h.length() < sizeof(pushSrvHost)) strlcpy(pushSrvHost, h.c_str(), sizeof(pushSrvHost));
+    }
+    if (server.hasArg("port")) {
+      long pt = server.arg("port").toInt();
+      if (pt > 0 && pt <= 65535) pushSrvPort = (uint16_t)pt;
+    }
+    savePushConfig();
+    webLog("🔧 推送配置已保存：%s | %s:%u\n", pushEnabled ? "开启" : "关闭", pushSrvHost, (unsigned)pushSrvPort);
+    server.send(200, "application/json",
+                String("{\"ok\":true,\"enabled\":") + (pushEnabled ? "true" : "false") +
+                ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"}");
+  });
   // ---- V2.1.1-b 电量校准（放电曲线标定）----
   server.on("/battcal", []() { server.send(200, "text/html; charset=utf-8", calPageHtml()); });
   server.on("/battcal/status", []() { server.send(200, "application/json", calStatusJson()); });
@@ -5316,6 +5684,10 @@ void setup() {
   updateWireless();
 
   serviceUsbEnum();                    // USB 枚举（SOF 帧号）：主机 / 充电器
+
+  // v2.2 推送任务：独立 FreeRTOS 任务，HTTP 只在这里阻塞（主循环一秒都不等）
+  //   优先级与 loop 相同（1）→ 靠 tick 时间片轮转；绑核心 0，避免跨核竞争 WiFi 栈
+  xTaskCreatePinnedToCore(pushTask, "phtpush", PUSH_TASK_STACK, nullptr, PUSH_TASK_PRIO, &pushTaskHandle, 0);
 }
 
 // ========== loop ==========
@@ -6161,6 +6533,8 @@ void loop() {
       apClosedMs = 0;
     }
   }
+
+  servicePushTick();   // v2.2 推送：微秒级判断（插电/首次联网 → 置位；HTTP 全在独立任务里）
 
   archivePump();       // 归档分片泵：每圈最多 40 行，**不阻塞采样**（2026-10-02）
   checkAndArchive();
