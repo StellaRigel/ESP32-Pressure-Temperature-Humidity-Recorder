@@ -527,6 +527,8 @@ void     serviceTopBar();   // V2.1.1-c 顶栏快通道
 String   calStatusJson();
 String   calReportJson();
 String   calPageHtml();
+// 密钥 / 推送地址配置页（2026-10-05）
+String   keyPageHtml();
 void     calBootCheck();
 void startAP();
 void stopAP();
@@ -4240,6 +4242,11 @@ canvas{height:200px;background:white;border-radius:6px;box-sizing:border-box;tou
 <span id="card-battcal"><a class="btn btn-nav" href="/battcal">🔋 电量校准</a></span>
   <a class="btn btn-download" id="btn-ota" href="/update" style="background:#e74c3c">🔄 OTA升级</a>
   <button class="btn btn-clear" onclick="doReboot()">🔌 重启设备</button>
+  <!-- 密钥/推送配置入口：**故意低调**（系统卡末尾一行灰色小字，不是按钮）——
+       那个页面的操作能让设备立刻与服务器失联，不适合做成显眼按钮。 -->
+  <div style="margin-top:10px;font-size:11px;color:#a0aec0">
+    <a href="/keycfg" style="color:#a0aec0;text-decoration:none">🔑 密钥 / 推送地址</a>
+  </div>
 </div>
 <script>
 /* ================= 传输层：统一走 HTTP fetch =================
@@ -5462,6 +5469,7 @@ doScan();
 
   // ---- V2.1.1-b 电量校准（放电曲线标定）----
   server.on("/battcal", []() { server.send(200, "text/html; charset=utf-8", calPageHtml()); });
+  server.on("/keycfg", []() { server.send(200, "text/html; charset=utf-8", keyPageHtml()); });
   server.on("/battcal/status", []() { server.send(200, "application/json", calStatusJson()); });
   server.on("/battcal/start", []() {
     String msg; bool ok = calStart(server.arg("dry") == "1", msg);
@@ -6720,6 +6728,144 @@ String calReportJson() {
   for (int k = 0; k < 21; k++) { if (calTableOk) { if (k) s += ","; s += String(calPctV[k], 3); } }
   s += "]}";
   return s;
+}
+
+// ===== 密钥 / 推送地址配置页（2026-10-05）=====
+//   为什么加这个页面：这几项原先**只有 JSON 接口**（/pushcfg、/devkey、/devname），
+//   加一台新机器得手敲 5 条 curl，很容易记错。
+//
+//   ⚠️ 但设备网页**没有任何鉴权**（同局域网的人都能打开），而这里的按钮能让设备
+//      立刻和服务器失联。所以：
+//        * 主页入口做得**低调** —— 系统卡末尾一行灰色小字，不是大按钮
+//        * 页面内**顶部一大段警告**，危险操作**都要二次确认**（清除密钥要确认两次）
+//        * 「注册到服务器」在未绑定密钥时**禁用**，避免顺序点错
+//   本页只驱动已有的 JSON 接口，**没有新增任何后端逻辑**。
+String keyPageHtml() {
+  String h = R"rawliteral(<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>密钥与推送</title>)rawliteral" + String(WEB_ICONS) + R"rawliteral(
+<style>body{font-family:system-ui;margin:12px;background:#f7f7f9;color:#222}
+.card{background:#fff;border-radius:10px;padding:12px;margin-bottom:12px;box-shadow:0 1px 4px #0001}
+.card.danger{border:1px solid #f0a0a0}
+.btn{padding:9px 13px;margin:4px 4px 4px 0;border:none;border-radius:8px;color:#fff;font-size:14px;cursor:pointer}
+.b1{background:#2c7be5}.b2{background:#e67e22}.b3{background:#dc3545}.b4{background:#6c757d}
+.btn[disabled]{opacity:.4;cursor:not-allowed;filter:grayscale(.6)}
+input{font-size:14px;padding:6px 8px;border:1px solid #ccc;border-radius:6px;margin:3px 0}
+.warn{background:#fff4f4;border:1px solid #f0a0a0;color:#a01f1f;padding:9px 11px;border-radius:8px;font-size:13px;line-height:1.75}
+.note{font-size:12.5px;color:#666;line-height:1.7}
+#st{font-size:13px;color:#444;white-space:pre-wrap;line-height:1.75}
+#msg{font-size:13px;margin-top:8px;min-height:18px;line-height:1.6}
+a.back{font-size:13px;color:#2c7be5;text-decoration:none}</style></head><body>
+<div class="card danger"><h3>⚠️ 先读这段</h3>
+<div class="warn">
+① 点 <b>生成新密钥</b> 或 <b>清除密钥</b> 之后，这台设备会<b>立刻无法向服务器推送数据</b>（服务器认的还是旧密钥）。<br>
+② 换密钥后<b>必须马上点「注册到服务器」</b>，否则推送会一直 401。<br>
+③ 这个页面<b>没有口令保护</b> —— 同一局域网里任何人都能打开、都能点。<b>别让别人随手动。</b>
+</div>
+<div class="note" style="margin-top:8px">正常「加一台新机器」顺序：配下面的推送地址 → 生成密钥 → 填绑定口令 → 注册到服务器 → 回主页看推送是否正常。</div>
+</div>
+
+<div class="card"><h3>🔐 当前状态</h3><div id="st">加载中…</div><div id="msg"></div></div>
+
+<div class="card"><h3>📡 推送服务器地址</h3>
+<div class="note">改这项只换目标服务器，<b>不影响密钥、不会导致失联</b>。</div>
+<div>地址 <input id="ph" size="15" placeholder="192.168.1.100"> 端口 <input id="pp" size="6" placeholder="8080"></div>
+<button class="btn b1" onclick="savePush()">保存地址</button>
+<button class="btn b4" id="bOn" onclick="togglePush()">…</button>
+</div>
+
+<div class="card"><h3>🏷 设备名</h3>
+<div class="note">默认是 <b>PHT-&lt;MAC后6位&gt;</b>，天生唯一，<b>建议不要改</b>。<br>
+改名会向服务器<b>查重名</b>，所以必须先连上 WiFi；只能用字母/数字/点/下划线/连字符，1~32 字符。</div>
+<div>名称 <input id="dn" size="18"></div>
+<button class="btn b1" onclick="saveName()">保存名称</button>
+</div>
+
+<div class="card danger"><h3>🔑 密钥操作（危险）</h3>
+<div class="note">绑定口令 = 服务器 <b>/etc/pht-server.env</b> 里的 <b>PHT_ENROLL_PASSWORD</b>。</div>
+<div>绑定口令 <input id="epw" type="password" size="30" autocomplete="off" placeholder="注册时才需要"></div>
+<div>
+<button class="btn b2" id="bGen" onclick="doGen()">生成新密钥</button>
+<button class="btn b1" id="bEnroll" onclick="doEnroll()">注册到服务器</button>
+<button class="btn b3" id="bClear" onclick="doClear()">清除密钥</button>
+</div>
+<div class="note" style="margin-top:6px">顺序：① 生成 → ② 注册。<b>只注册不生成</b>是安全的（用于密钥与服务器不一致时重新同步）。</div>
+</div>
+
+<div class="card"><a class="back" href="/">← 返回主页</a></div>
+<script>
+function q(i){return document.getElementById(i);}
+function api(u){return fetch(u).then(function(r){return r.json();});}
+function post(u,o){
+  var b=Object.keys(o).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k]);}).join('&');
+  return fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
+         .then(function(r){return r.json();});
+}
+function msg(t,err){var m=q('msg');m.style.color=err?'#c0392b':'#16794a';m.textContent=t;}
+
+function load(){
+  api('/devkey').then(function(k){
+    q('st').textContent=
+      '密钥    : '+(k.bound?'已绑定':'未绑定')+'\n'+
+      'keyId   : '+(k.keyId||'--')+'\n'+
+      '签名自检: '+(k.selftest?'通过':'失败')+'      时钟: '+(k.clockOk?'可用':'不可用')+'\n'+
+      '设备名  : '+k.dev+'\n'+
+      '服务器  : '+k.srv+'      WiFi: '+(k.wifi?'已连接':'未连接');
+    q('bEnroll').disabled=!k.bound;
+    q('bClear').disabled=!k.bound;
+  });
+  api('/push').then(function(p){
+    var a=String(p.srv||'').split(':');
+    q('ph').value=a[0]||''; q('pp').value=a[1]||'8080';
+    q('bOn').textContent=p.enabled?'暂停推送':'开启推送';
+    q('bOn').setAttribute('data-on',p.enabled?'1':'0');
+  });
+  api('/devname').then(function(d){
+    q('dn').placeholder=d.default||'';
+    if(!q('dn').value) q('dn').value=d.dev||'';
+  });
+}
+
+function savePush(){
+  post('/pushcfg',{on:'1',host:q('ph').value.trim(),port:q('pp').value.trim()}).then(function(r){
+    if(r.ok){msg('已保存：'+r.srv);load();}else msg('保存失败',1);
+  });
+}
+function togglePush(){
+  var on=(q('bOn').getAttribute('data-on')==='1')?'0':'1';
+  post('/pushcfg',{on:on,host:q('ph').value.trim(),port:q('pp').value.trim()}).then(function(r){
+    msg(r.enabled?'推送已开启':'推送已暂停');load();
+  });
+}
+function saveName(){
+  post('/devname',{dev:q('dn').value.trim()}).then(function(r){
+    if(r.ok){msg('设备名已保存：'+(r.dev||q('dn').value));load();}
+    else msg('改名被拒：'+(r.err||'未知原因'),1);
+  });
+}
+function doGen(){
+  if(!confirm('确定要【生成新密钥】吗？\n\n生成之后，这台设备会立刻无法推送数据，\n必须马上再点【注册到服务器】才能恢复。\n\n继续？'))return;
+  post('/devkey',{act:'gen'}).then(function(r){
+    if(r.ok){msg('新密钥已生成（keyId '+r.keyId+'）。现在立刻点【注册到服务器】！',1);load();}
+    else msg('生成失败',1);
+  });
+}
+function doEnroll(){
+  var pw=q('epw').value;
+  if(!pw){msg('请先填绑定口令',1);return;}
+  msg('注册中…');
+  post('/devkey',{act:'enroll',pw:pw}).then(function(r){
+    if(r.ok){msg('已注册到服务器。');load();}
+    else msg('注册被拒。看「日志」页：401=口令错  403=设备IP不在允许网段  503=服务器没配口令',1);
+  });
+}
+function doClear(){
+  if(!confirm('确定要【清除密钥】吗？\n\n清除后这台设备将无法推送数据\n（旧静态 token 已轮换，回退路径也走不通）。\n\n继续？'))return;
+  if(!confirm('再确认一次：真的要清除这台设备的密钥吗？'))return;
+  post('/devkey',{act:'clear'}).then(function(r){msg('密钥已清除，设备现在无法推送。',1);load();});
+}
+load();
+</script></body></html>)rawliteral";
+  return h;
 }
 
 String calPageHtml() {
