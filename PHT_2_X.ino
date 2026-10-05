@@ -2993,6 +2993,13 @@ char     pushDevName[33] = {0};          // 设备 ID（NVS；空 = 用默认名
 char     pushSrvHost[64] = PUSH_SRV_HOST_DEF;
 uint16_t pushSrvPort    = PUSH_SRV_PORT_DEF;
 uint32_t lastSyncedTs   = 0;             // 已成功上传的最大 ts（NVS）
+// ⚠️ 游标"是否还有效"的标记（也存 NVS）。
+//   为什么需要它：lastSyncedTs 是**绝对时间戳**，而数据源只有 RAM 环（约 5 小时）。
+//   重启后如果环已经被新数据覆盖，这个旧游标会**大于环里最新点** → 待传数算出来是 0，
+//   于是整批积压永远不会被推上去（2026-10-05 实测踩到：OTA 重启后 pending 卡在 0/1，passes 不涨）。
+//   规则：只有【环里被完全推干净】时才置 true —— 此时游标确实是"下一个要推的点"；
+//         一旦被夹紧（说明中间有空档）就置 false，重启后必须重新夹一次。
+bool     pushCursorValid = false;
 volatile bool pushLastOk = false;        // 最近一次发送是否成功
 uint32_t pushLastTryMs = 0, pushLastOkMs = 0;
 uint16_t pushFailStreak = 0;
@@ -3047,6 +3054,7 @@ void loadPushConfig() {
   String sh = prefs.getString("srvHost", PUSH_SRV_HOST_DEF);
   pushSrvPort  = prefs.getUShort("srvPort", PUSH_SRV_PORT_DEF);
   lastSyncedTs = prefs.getULong("lastSync", 0);
+  pushCursorValid = prefs.getBool("syncOk", false);
   prefs.end();
 
   if (dn.length() > 0) { strlcpy(pushDevName, dn.c_str(), sizeof(pushDevName)); }
@@ -3066,6 +3074,7 @@ void savePushConfig() {
   prefs.putString("srvHost", pushSrvHost);
   prefs.putUShort("srvPort", pushSrvPort);
   prefs.putULong("lastSync", lastSyncedTs);
+  prefs.putBool("syncOk", pushCursorValid);
   prefs.end();
 }
 
@@ -3182,6 +3191,27 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
   return true;
 }
 
+// 游标夹紧：把 lastSyncedTs 拉回"RAM 环里还有的"范围，返回是否动过。
+//   为什么必须有：lastSyncedTs 是绝对时间戳，而数据源只有 RAM 环（约 5 小时）。
+//   重启后环可能已被覆盖（旧游标 > 环里最新点）→ 待传数算出来是 0 → 积压永远推不上去。
+//   这里只在【真的落后】时才动，并把 pushCursorValid 置 false（说明中间有空档，
+//   重启后必须重新夹一次，不能直接信这个游标）。
+bool pushClampCursor() {
+  if (bufferSize <= 0) return false;
+  uint32_t oldestTs = 0;
+  for (int i = 0; i < bufferSize; i++) {
+    const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
+    if (hasValidDate(d.time) && (oldestTs == 0 || d.time < oldestTs)) oldestTs = d.time;
+  }
+  if (!oldestTs || oldestTs <= lastSyncedTs) return false;      // 环里的点全都推过了
+  if (lastSyncedTs > 0 && (oldestTs - lastSyncedTs) > (uint32_t)(INTERVAL_SEC * 3)) {
+    webLog("⚠️ 推送游标落后内存窗口：跳过 %lu 秒空档（%.1f 小时）—— 只推 RAM 里现有的点\n",
+           (unsigned long)(oldestTs - lastSyncedTs), (oldestTs - lastSyncedTs) / 3600.0f);
+  }
+  lastSyncedTs = oldestTs - 1;                                 // -1 保证最老点本身也被收集到
+  pushCursorValid = false;                                     // 中间有空档 → 游标不再可信
+  return true;
+}
 void pushReschedule(uint32_t delaySec) {
   if (delaySec == 0) delaySec = pushJitterSec();       // 首推也带抖动，多设备不同时打服务器
   pushNextAtMs = millis() + delaySec * 1000UL;
@@ -3278,21 +3308,8 @@ void pushTask(void* arg) {
     }
     pushTickForce = false;
 
-    // 游标落后于内存窗口（重启 / 长时间断网）→ 退到 RAM 最老的有效点，别空转
-    if (bufferSize > 0) {
-      uint32_t oldestTs = 0;
-      for (int i = 0; i < bufferSize; i++) {
-        const DataPoint& d = buffer[(bufferHead - bufferSize + i + bufferCapacity) % bufferCapacity];
-        if (hasValidDate(d.time) && d.time > oldestTs && (oldestTs == 0 || d.time < oldestTs)) oldestTs = d.time;
-      }
-      if (oldestTs && oldestTs > lastSyncedTs) {
-        if (lastSyncedTs > 0 && (oldestTs - lastSyncedTs) > (uint32_t)(INTERVAL_SEC * 3)) {
-          webLog("⚠️ 推送游标落后内存窗口：跳过 %lu 秒空档（%.1f 小时）—— 只推 RAM 里现有的点\n",
-                 (unsigned long)(oldestTs - lastSyncedTs), (oldestTs - lastSyncedTs) / 3600.0f);
-        }
-        lastSyncedTs = oldestTs - 1;               // -1 保证最老点本身也被收集到
-      }
-    }
+    // 游标夹紧：落后于内存窗口（重启 / 长时间断网 / 环已被覆盖）→ 退到 RAM 最老的有效点
+    pushClampCursor();
 
     if (pushCountNewer(lastSyncedTs) <= 0) {       // 无待传：不算失败，直接排下一轮
       pushLastOk = true;
@@ -3305,6 +3322,8 @@ void pushTask(void* arg) {
     int r = pushRunPass();
 
     if (r == 1) {                                  // ✅ 本轮推完
+      pushCursorValid = true;
+      savePushConfig();
       pushRunState = 0;
       pushPassCount++;
       if (pushNeedBackfill) {
@@ -3402,6 +3421,7 @@ String buildStatusJson(bool overBLE) {
                           ",\"dev\":\"" + String(pushDevName) + "\"" +
                           ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"" +
                           ",\"lastSyncedTs\":" + String(lastSyncedTs) +
+                           ",\"cursorOk\":" + (pushCursorValid ? "true" : "false") +   // 环已推干净（游标可信）；false=中间有空档
                           ",\"lastOk\":" + (pushLastOk ? "true" : "false") +
                           ",\"failStreak\":" + String(pushFailStreak) +
                           ",\"jitter\":" + String(pushJitterSec()) +
@@ -4818,7 +4838,8 @@ doScan();
     String j = String("{\"dev\":\"") + pushDevName + "\",\"default\":\"" + dflt + "\"";
     j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
     j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
-    j += ",\"lastSyncedTs\":" + String(lastSyncedTs) + ",\"enabled\":" +
+    j += ",\"lastSyncedTs\":" + String(lastSyncedTs) +
+                           ",\"cursorOk\":" + (pushCursorValid ? "true" : "false") +   // 环已推干净（游标可信）；false=中间有空档 ",\"enabled\":" +
          String(pushEnabled ? "true" : "false") + "}";
     server.send(200, "application/json", j);
   });
