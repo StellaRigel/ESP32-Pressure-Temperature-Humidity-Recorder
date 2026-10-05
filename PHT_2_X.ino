@@ -49,6 +49,7 @@
 #include <BLE2902.h>
 #endif
 #include "ina230.h"        // ← INA230 电池监测（v2.2：取代 INA226）
+#include "pht_crypto.h"     // ← 自带 SHA-256/HMAC-SHA256（设备一机一密签名用）
 
 // ===== USB 枚举检测（v2.2 · BQ24074 EN1/EN2 三档切换）=====
 //   机制：USB 枚举成功 → EN1/EN2=(0,1) USB500 档；失败 → (1,0) ISET 档。
@@ -2935,6 +2936,22 @@ String fmtHM(uint32_t t) {
 Preferences prefs;
 uint8_t deviceMode = 0;          // 默认固定
 
+// ==================== 设备一机一密（2026-10-05）====================
+//   密钥**只存 NVS，绝不进固件** —— 这样 OTA 的 .bin 是"无秘密"的，
+//   固件被谁下载走都不构成泄漏；而 Preferences(NVS) 分区独立于 app 分区，
+//   **OTA 升级不会清掉密钥**，所以"内网绑一次、之后随便 OTA"成立。
+//
+//   签名式必须与服务器 PHT_SERVER/devicekey.py 完全一致：
+//     待签串 = "v1|" + deviceId + "|" + ts + "|" + body
+//     头     = X-PHT-Auth: v1|<deviceId>|<ts>|<hex HMAC-SHA256>
+char     devKeySecret[65] = "";   // 64 hex + NUL；空 = 未绑定 → 回退旧静态 token
+char     devKeyId[33]     = "";   // 32 hex 公开标识（非凭据）
+uint32_t devKeySetAt      = 0;
+bool     devKeySelfTestOk = false;   // pht_crypto 自检结果（开机跑一次）
+
+// 是否已绑定密钥
+bool devKeyBound() { return devKeySecret[0] != '\0'; }
+
 void loadDeviceMode() {
   prefs.begin("pht", true);
   deviceMode = prefs.getUChar("mode", 0);
@@ -3060,6 +3077,100 @@ uint32_t pushJitterSec() {
   return (uint32_t)((mac >> 3) % PUSH_JITTER_MAX_SEC);
 }
 
+// ==================== 一机一密：生成 / 清除 / 签名 / 注册 ====================
+
+// 用硬件 TRNG 生成 64 位 hex 密钥（32 字节）
+//   为什么在设备上生成而不是服务器下发：服务器就不必持有一份"别人的凭据副本"。
+//   代价：绑定时要把密钥交给服务器一次（内网 HTTP）。这在你的场景（自己内网、
+//   绑一次）是可接受的；换来的是"服务器被拖库 ≠ 能冒充设备以外的东西"
+//   以及**内网被监听也拿不到密钥**（只看到一个公开 id）。
+bool devKeyGenerate() {
+  uint8_t raw[32];
+  esp_fill_random(raw, sizeof(raw));
+  pht_hex(raw, sizeof(raw), devKeySecret);
+  memset(raw, 0, sizeof(raw));           // 别把密钥留在栈上
+
+  uint8_t kid[16];
+  esp_fill_random(kid, sizeof(kid));
+  pht_hex(kid, sizeof(kid), devKeyId);
+  memset(kid, 0, sizeof(kid));
+
+  devKeySetAt = (uint32_t)time(nullptr);
+  savePushConfig();
+  webLogln("🔑 已生成设备密钥（keyId=%s…）—— 还需向服务器注册", devKeyId);
+  return true;
+}
+
+void devKeyClear() {
+  devKeySecret[0] = '\0';
+  devKeyId[0]     = '\0';
+  devKeySetAt     = 0;
+  savePushConfig();
+  webLogln("🔓 设备密钥已清除 —— 回退到旧静态 token 方式");
+}
+
+// 生成 X-PHT-Auth 头。ts 用当前 unix 秒（服务器只接受 ±90s）
+bool devKeySignHeader(uint32_t ts, const String& body, String& out) {
+  if (!devKeyBound()) return false;
+  uint8_t key[32];
+  if (!pht_unhex(devKeySecret, key, sizeof(key))) return false;
+
+  // 待签串 —— ⚠️ 必须与服务器 devicekey._canonical 逐字节一致
+  String msg = String("v1|") + pushDevName + "|" + String((unsigned long)ts) + "|" + body;
+
+  uint8_t mac[32];
+  pht_hmac_sha256(key, sizeof(key), msg.c_str(), msg.length(), mac);
+  memset(key, 0, sizeof(key));
+
+  char hex[65];
+  pht_hex(mac, sizeof(mac), hex);
+  memset(mac, 0, sizeof(mac));
+
+  out = String("v1|") + pushDevName + "|" + String((unsigned long)ts) + "|" + hex;
+  return true;
+}
+
+// 向服务器注册密钥（内网一次性动作）
+//   服务器侧三道门：绑定口令 + **仅内网来源** + 限速。
+//   ⚠️ 本函数**不能**用 pushSendBatch 那套（它自己发签名头），
+//      注册本身用绑定口令认证，与数据签名无关。
+bool devKeyEnroll(const char* enrollPw) {
+  if (!devKeyBound()) { webLogln("❌ 注册失败：还没生成密钥"); return false; }
+  if (!enrollPw || !enrollPw[0]) { webLogln("❌ 注册失败：未提供绑定口令"); return false; }
+  if (WiFi.status() != WL_CONNECTED) { webLogln("❌ 注册失败：未连 WiFi"); return false; }
+
+  String body = String("{\"secret\":\"") + devKeySecret +
+                "\",\"key_id\":\"" + devKeyId + "\"}";
+  String url = String("http://") + pushSrvHost + ":" + String(pushSrvPort) +
+               "/api/v1/devices/" + pushDevName + "/key";
+
+  WiFiClient c;
+  HTTPClient http;
+  http.setConnectTimeout(4000);
+  http.setTimeout(8000);
+  http.setReuse(false);
+  if (!http.begin(c, url)) { webLogln("❌ 注册失败：URL 解析失败"); return false; }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-PHT-Enroll", enrollPw);
+
+  int code = http.POST((uint8_t*)body.c_str(), body.length());
+  String resp = (code > 0) ? http.getString() : String();
+  http.end();
+
+  if (code == 200) {
+    webLogln("✅ 密钥已注册到服务器（%s）", pushDevName);
+    return true;
+  }
+  if (code == 403)      webLogln("❌ 注册被拒 403：服务器认为来源不是内网。请从内网访问设备网页再点注册");
+  else if (code == 401) webLogln("❌ 注册被拒 401：绑定口令不对（服务器 PHT_ENROLL_PASSWORD）");
+  else if (code == 503) webLogln("❌ 注册被拒 503：服务器没配 PHT_ENROLL_PASSWORD，注册接口已禁用");
+  else                  webLogln("❌ 注册失败：HTTP %d %s", code, resp.substring(0, 100).c_str());
+  return false;
+}
+
+// 查询服务器上本设备的密钥状态（需管理员登录，故只用于调试）
+//   —— 实际使用中"注册成功"就以 enroll 的返回码为准，这里不额外接。
+
 void loadPushConfig() {
   prefs.begin("pht", true);
   pushEnabled = prefs.getBool("pushOn", true);
@@ -3073,6 +3184,14 @@ void loadPushConfig() {
   { String s = prefs.getString("sdFile", ""); strlcpy(pushSdCur, s.c_str(), sizeof(pushSdCur)); }
   pushFlashCursor = prefs.getULong("flashSync", 0);
   pushFlashDone   = prefs.getBool("flashDone", false);
+  // 一机一密：密钥只存 NVS，**绝不进固件**（见 deviceKeyLoad 的说明）
+  {
+    String sk = prefs.getString("dkSec", "");
+    String ki = prefs.getString("dkId", "");
+    strlcpy(devKeySecret, sk.c_str(), sizeof(devKeySecret));
+    strlcpy(devKeyId,     ki.c_str(), sizeof(devKeyId));
+    devKeySetAt = prefs.getULong("dkAt", 0);
+  }
   prefs.end();
 
   if (dn.length() > 0) { strlcpy(pushDevName, dn.c_str(), sizeof(pushDevName)); }
@@ -3098,6 +3217,9 @@ void savePushConfig() {
   prefs.putBool("sdDone", pushSdDone);
   prefs.putULong("sdSync", pushSdCursor);
   prefs.putString("sdFile", String(pushSdCur));
+  prefs.putString("dkSec", String(devKeySecret));
+  prefs.putString("dkId",  String(devKeyId));
+  prefs.putULong("dkAt",   devKeySetAt);
   prefs.end();
 }
 
@@ -3424,16 +3546,36 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
     return false;
   }
   http.addHeader("Content-Type", "application/json");
-  // token 为空 = 不发该头（只有服务器也没设 token 时才成立）
-  const char* tok = PHT_API_TOKEN;
-  if (tok && tok[0]) http.addHeader("X-PHT-Token", tok);
+
+  // ── 认证：优先一机一密，未绑定才回退旧静态 token ──
+  //   ⚠️ 签名必须覆盖 body **原始字节** —— 服务器先 await request.body() 再验签，
+  //      这里送出去的也是 body 的原始字节，两边一致。
+  //   ⚠️ 用 time(nullptr) 当 ts：服务器只接受 ±90s。设备时间靠 RTC/NTP，
+  //      没校时时 ts 不可信 → 那种情况下服务器会 401，日志里能看到原因。
+  if (devKeyBound()) {
+    uint32_t nowTs = (uint32_t)time(nullptr);
+    String authHdr;
+    if (devKeySignHeader(nowTs, body, authHdr)) {
+      http.addHeader("X-PHT-Auth", authHdr);
+    } else {
+      webLogln("⚠️ 推送：密钥签名失败（密钥格式非法？）—— 本批不发送");
+      http.end();
+      return false;
+    }
+  } else {
+    // token 为空 = 不发该头（只有服务器也没设 token 时才成立）
+    const char* tok = PHT_API_TOKEN;
+    if (tok && tok[0]) http.addHeader("X-PHT-Token", tok);
+  }
 
   int code = http.POST((uint8_t*)body.c_str(), body.length());
   String resp = (code > 0) ? http.getString() : String();
   http.end();
 
   if (code != 200) {
-    if (code == 401)      webLogln("❌ 推送被拒：401（token 不对 —— 固件注入的 PHT_API_TOKEN 与服务器 /etc/pht-server.env 不一致）");
+    if (code == 401)      webLogln(devKeyBound()
+                              ? "❌ 推送被拒：401（签名无效 —— 设备时钟偏差过大？或服务器上该设备密钥不一致；可重新注册）"
+                              : "❌ 推送被拒：401（token 不对 —— 固件注入的 PHT_API_TOKEN 与服务器 /etc/pht-server.env 不一致）");
     else if (code == 429) webLogln("❌ 推送被限速：429（%s）", resp.substring(0, 80).c_str());
     else if (code < 0)    webLogln("❌ 推送失败：%s（%s:%u 不可达？）", http.errorToString(code).c_str(),
                                    pushSrvHost, (unsigned)pushSrvPort);
@@ -5274,6 +5416,50 @@ doScan();
                 String("{\"ok\":true,\"enabled\":") + (pushEnabled ? "true" : "false") +
                 ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"}");
   });
+
+  // ==================== 一机一密：网页端点 ====================
+  //   ⚠️ 这些端点**不做鉴权**，与设备上其它配置端点一致（局域网工具）。
+  //      风险边界：能访问到设备网页的人本来就能改服务器地址等配置。
+  //      真要收紧，应该在设备网页整体加一层认证 —— 那是另一件事。
+  server.on("/devkey", HTTP_GET, []() {
+    String j = String("{\"bound\":") + (devKeyBound() ? "true" : "false");
+    j += ",\"keyId\":\"" + String(devKeyId) + "\"";
+    j += ",\"setAt\":" + String((unsigned long)devKeySetAt);
+    j += ",\"selftest\":" + String(devKeySelfTestOk ? "true" : "false");
+    j += ",\"dev\":\"" + String(pushDevName) + "\"";
+    j += ",\"srv\":\"" + String(pushSrvHost) + ":" + String(pushSrvPort) + "\"";
+    j += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
+    j += ",\"clockOk\":" + String(time(nullptr) > 1700000000 ? "true" : "false");
+    j += "}";
+    server.send(200, "application/json", j);
+  });
+
+  // 生成（或重新生成）密钥。⚠️ 重新生成后**必须重新注册**，否则推送会 401
+  server.on("/devkey", HTTP_POST, []() {
+    String act = server.arg("act");
+    if (act == "gen") {
+      devKeyGenerate();
+      server.send(200, "application/json",
+                  String("{\"ok\":true,\"keyId\":\"") + devKeyId +
+                  "\",\"note\":\"请立即点【注册到服务器】，否则推送会被拒\"}");
+      return;
+    }
+    if (act == "clear") {
+      devKeyClear();
+      server.send(200, "application/json", "{\"ok\":true,\"bound\":false}");
+      return;
+    }
+    if (act == "enroll") {
+      String pw = server.arg("pw");
+      pw.trim();
+      bool ok = devKeyEnroll(pw.c_str());
+      server.send(200, "application/json",
+                  String("{\"ok\":") + (ok ? "true" : "false") + "}");
+      return;
+    }
+    server.send(400, "application/json", "{\"ok\":false,\"err\":\"未知 act\"}");
+  });
+
   // ---- V2.1.1-b 电量校准（放电曲线标定）----
   server.on("/battcal", []() { server.send(200, "text/html; charset=utf-8", calPageHtml()); });
   server.on("/battcal/status", []() { server.send(200, "application/json", calStatusJson()); });
@@ -5871,6 +6057,18 @@ void setup() {
   initFS();
   loadDeviceMode();                    // 读固定/移动（充电策略与顶栏都要用）
   loadPushConfig();                    // 读推送配置（设备名/服务器/同步游标）
+
+  // 一机一密：开机跑一次密码学自检（几十微秒）。
+  //   ⚠️ 为什么必须自检：SHA/HMAC 写错的表现是**全线 401**，
+  //      而那看起来像"服务器密钥不对/时钟偏差"，排查会绕很远。
+  //      自检用 FIPS/公开测试向量，一次就把"算法对不对"与"配置对不对"分开。
+  devKeySelfTestOk = pht_crypto_selftest();
+  if (!devKeySelfTestOk) {
+    webLogln("❌ 密码学自检失败！一机一密不可用（SHA/HMAC 实现有问题）");
+  } else if (devKeyBound()) {
+    webLogln("🔑 一机一密已启用（keyId=%s…）", devKeyId);
+  }
+
   calBootCheck();                      // 载入标定曲线 → 低电三档
   uiDisplay.init();
 
