@@ -3323,7 +3323,9 @@ void applyServerTime(const String& hdrVal) {
 //   绑定口令能换任意设备的密钥（劫持数据流），绝不能交给朋友。
 bool devRenameTo(const char* want) {
   if (!want) return false;
-  if (!pushDevNameValid(want)) {
+  // 空名字是**合法语义**（清除显示名 → 网页回退显示身份 ID）。
+  //   \u26a0\ufe0f 校验只针对非空 —— 否则"清除"这条路会被自己挡住。
+  if (want[0] && !pushDevNameValid(want)) {
     webLogln("\u274c 改名失败：名字不合法（1~24 个字符，不能有控制字符）");
     return false;
   }
@@ -3774,10 +3776,14 @@ bool pushSendBatch(int n, const uint32_t* ts, const float* t, const float* h, co
     int q2 = (q1 > 0) ? resp.indexOf('"', q1 + 1) : -1;
     if (q1 > 0 && q2 > q1) {
       String nm = resp.substring(q1 + 1, q2);
-      if (nm.length() && nm != String(pushDevName) && pushDevNameValid(nm.c_str())) {
+      // 空字符串是**合法载荷**：表示"服务器清除了显示名"，本地也要清掉，
+      //   否则服务器那边已经回退显示 ID、设备上还挂着旧名字。
+      bool okName = (nm.length() == 0) || pushDevNameValid(nm.c_str());
+      if (okName && nm != String(pushDevName)) {
         strlcpy(pushDevName, nm.c_str(), sizeof(pushDevName));
         savePushConfig();
-        webLogln("\U0001f3f7\ufe0f 服务器下发了新设备名：%s", pushDevName);
+        if (nm.length()) webLogln("\U0001f3f7\ufe0f 服务器下发了新设备名：%s", pushDevName);
+        else             webLogln("\U0001f3f7\ufe0f 服务器清除了设备名（本地回退显示 ID）");
       }
     }
   }
@@ -4452,7 +4458,9 @@ function apiFetch(url, opt){ return fetch(url, opt); }
 async function setDevName() {
   var t = document.getElementById('dnTip');
   var nm = document.getElementById('dnIn').value.trim();
-  if (!nm) { t.style.color = '#c0392b'; t.textContent = '名字不能为空'; return; }
+  // 留空 = 清除显示名（网页标题回退出厂默认）。这是合法操作，但要确认一下，
+  //   免得手滑清掉。服务端同样把空名字当"清除"，不是校验失败。
+  if (!nm && !confirm('名字留空 = 清除显示名（网页标题回退为出厂默认）。\n继续？')) return;
   t.style.color = '#888'; t.textContent = '保存中…';
   try {
     var r = await fetch('/devname', {
