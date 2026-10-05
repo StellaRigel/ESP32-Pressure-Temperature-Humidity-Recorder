@@ -3015,7 +3015,7 @@ uint32_t pushLastUploadMs     = 0;
 bool     pushNeedBackfill     = false;     // 服务器提示有更早的缺口（第二阶段 CSV/SD 补传用）
 uint32_t pushBackfillBeforeTs = 0;
 uint8_t  pushRunState         = 0;         // 0=空闲 1=发送中 2=退避等待
-volatile bool pushCancel      = false;     // 断开无线/标定开始时置位 → 让任务尽快收手
+volatile bool pushCancel      = false;     // ⚠️ 预留位：目前【无人置位】。实际收手靠 WiFi.status()!=WL_CONNECTED 与 pushEnabled 两道检查（实测够用）；要在标定/断无线时立刻收手，在这里置位即可
 volatile bool pushPowerWasExt = false;     // 插电触发用：上一轮是否外接电源
 uint32_t pushLastBootPushMs   = 0;         // 本会话首次「有无线」的时刻（首推基准）
 uint8_t  pushPassCount        = 0;         // 本会话已完成的同步轮次（/status 观察用）
